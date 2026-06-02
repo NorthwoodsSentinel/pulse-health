@@ -16,6 +16,7 @@
 import { sendPush } from "./push";
 import { signState, verifyState } from "./oauth";
 import * as oura from "./oura";
+import * as strava from "./strava";
 
 export interface Env {
   DB: D1Database;
@@ -26,6 +27,8 @@ export interface Env {
   ADMIN_TOKEN: string;
   OURA_CLIENT_ID: string;
   OURA_CLIENT_SECRET: string;
+  STRAVA_CLIENT_ID: string;
+  STRAVA_CLIENT_SECRET: string;
 }
 
 function json(data: unknown, status = 200, extra: HeadersInit = {}): Response {
@@ -50,6 +53,10 @@ function requireAdmin(req: Request, env: Env): Response | null {
 
 function ouraRedirectUri(req: Request): string {
   return `${new URL(req.url).origin}/api/oura/callback`;
+}
+
+function stravaRedirectUri(req: Request): string {
+  return `${new URL(req.url).origin}/api/strava/callback`;
 }
 
 async function pushAll(env: Env, title: string, body: string, url = "/"): Promise<number> {
@@ -280,6 +287,108 @@ export default {
     if (path === "/api/oura/latest" && method === "GET") {
       const rows = await oura.latestReadings(env.DB);
       return json({ source: "oura", latest: rows });
+    }
+
+    // -------- Strava --------
+
+    if (path === "/api/strava/connect" && method === "GET") {
+      const state = await signState("strava", env.ADMIN_TOKEN);
+      const redirect = strava.authorizeUrl(env.STRAVA_CLIENT_ID, stravaRedirectUri(req), state);
+      return Response.redirect(redirect, 302);
+    }
+
+    if (path === "/api/strava/callback" && method === "GET") {
+      const code = url.searchParams.get("code");
+      const state = url.searchParams.get("state");
+      const error = url.searchParams.get("error");
+      if (error) {
+        return new Response(`Strava authorization failed: ${error}`, { status: 400 });
+      }
+      if (!code || !state) {
+        return new Response("Missing code or state", { status: 400 });
+      }
+      const valid = await verifyState(state, "strava", env.ADMIN_TOKEN);
+      if (!valid) return new Response("Invalid or expired state", { status: 400 });
+
+      try {
+        const token = await strava.exchangeCode(code, env.STRAVA_CLIENT_ID, env.STRAVA_CLIENT_SECRET);
+        await strava.storeToken(env.DB, token);
+
+        const startedAt = Date.now();
+        const result = await strava.ingest(env.DB, token.access_token);
+
+        await env.DB.prepare(
+          `INSERT INTO ingest_log (source, started_at, finished_at, kinds, rows_added, rows_seen, status, trigger, error)
+           VALUES ('strava', ?1, ?2, ?3, ?4, ?5, ?6, 'oauth_callback', ?7)`,
+        )
+          .bind(
+            startedAt,
+            Date.now(),
+            result.kinds.join(","),
+            result.rowsAdded,
+            result.rowsSeen,
+            result.errors.length === 0 ? "success" : "partial",
+            result.errors.join(" | ") || null,
+          )
+          .run();
+
+        ctx.waitUntil(
+          pushAll(
+            env,
+            "Strava connected",
+            `${result.rowsAdded} new readings (${result.kinds.join(", ") || "?"}).`,
+          ),
+        );
+
+        return new Response(
+          `<!doctype html><html><body style="background:#0f172a;color:#f1f5f9;font-family:system-ui;padding:24px;">
+          <h1>Strava connected ✅</h1>
+          <p>${result.rowsAdded} new readings ingested across ${result.kinds.length} kinds.</p>
+          <p>Kinds: ${result.kinds.join(", ") || "(none)"}.</p>
+          ${result.errors.length ? `<p style="color:#f87171">Errors: ${result.errors.join("; ")}</p>` : ""}
+          <p><a href="/" style="color:#fc5200;">Back to dashboard</a></p>
+          </body></html>`,
+          { headers: { "content-type": "text/html; charset=utf-8" } },
+        );
+      } catch (e) {
+        return new Response(`Strava token exchange or initial ingest failed: ${(e as Error).message}`, {
+          status: 500,
+        });
+      }
+    }
+
+    if (path === "/api/strava/sync" && method === "POST") {
+      const denied = requireAdmin(req, env);
+      if (denied) return denied;
+      const body = (await req.json().catch(() => ({}))) as { days?: number };
+      const access = await strava.getValidAccessToken(
+        env.DB,
+        env.STRAVA_CLIENT_ID,
+        env.STRAVA_CLIENT_SECRET,
+      );
+      if (!access) return json({ error: "no strava token; visit /api/strava/connect first" }, 400);
+      const startedAt = Date.now();
+      const result = await strava.ingest(env.DB, access, body.days);
+      await env.DB.prepare(
+        `INSERT INTO ingest_log (source, started_at, finished_at, kinds, rows_added, rows_seen, status, trigger, error)
+         VALUES ('strava', ?1, ?2, ?3, ?4, ?5, ?6, 'manual', ?7)`,
+      )
+        .bind(
+          startedAt,
+          Date.now(),
+          result.kinds.join(","),
+          result.rowsAdded,
+          result.rowsSeen,
+          result.errors.length === 0 ? "success" : "partial",
+          result.errors.join(" | ") || null,
+        )
+        .run();
+      return json({ days: body.days ?? "all", ...result });
+    }
+
+    if (path === "/api/strava/latest" && method === "GET") {
+      const rows = await strava.latestReadings(env.DB);
+      return json({ source: "strava", latest: rows });
     }
 
     // -------- Static assets --------
