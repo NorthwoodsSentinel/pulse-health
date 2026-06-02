@@ -152,7 +152,15 @@ export default {
 
     if (path === "/api/oura/connect" && method === "GET") {
       const state = await signState("oura", env.ADMIN_TOKEN);
-      const redirect = oura.authorizeUrl(env.OURA_CLIENT_ID, ouraRedirectUri(req), state);
+      const verifier = oura.generateCodeVerifier();
+      const challenge = await oura.deriveCodeChallenge(verifier);
+      // Stash verifier keyed by state. PKCE requires it at /callback.
+      await env.DB.prepare(
+        `INSERT INTO oauth_pending (state, source, code_verifier, created_at) VALUES (?1, 'oura', ?2, ?3)`,
+      )
+        .bind(state, verifier, Date.now())
+        .run();
+      const redirect = oura.authorizeUrl(env.OURA_CLIENT_ID, ouraRedirectUri(req), state, challenge);
       return Response.redirect(redirect, 302);
     }
 
@@ -170,12 +178,24 @@ export default {
       if (!valid) {
         return new Response("Invalid or expired state", { status: 400 });
       }
+      // Retrieve PKCE verifier matching this state, single-use.
+      const pending = await env.DB.prepare(
+        `SELECT code_verifier FROM oauth_pending WHERE state = ?1 AND source = 'oura'`,
+      )
+        .bind(state)
+        .first<{ code_verifier: string }>();
+      if (!pending) {
+        return new Response("PKCE verifier not found for this state", { status: 400 });
+      }
+      await env.DB.prepare(`DELETE FROM oauth_pending WHERE state = ?1`).bind(state).run();
+
       try {
         const token = await oura.exchangeCode(
           code,
           env.OURA_CLIENT_ID,
           env.OURA_CLIENT_SECRET,
           ouraRedirectUri(req),
+          pending.code_verifier,
         );
         await oura.storeToken(env.DB, token);
 

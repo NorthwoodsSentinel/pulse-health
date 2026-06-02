@@ -76,3 +76,15 @@ CREATE TABLE IF NOT EXISTS ingest_log (
 
 CREATE INDEX IF NOT EXISTS idx_ingest_log_source_started
   ON ingest_log(source, started_at DESC);
+
+-- ---------- Step 2: pending OAuth flows (PKCE verifier storage) ----------
+
+CREATE TABLE IF NOT EXISTS oauth_pending (
+  state         TEXT PRIMARY KEY,
+  source        TEXT NOT NULL,
+  code_verifier TEXT NOT NULL,
+  created_at    INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_pending_created
+  ON oauth_pending(created_at);

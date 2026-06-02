@@ -45,13 +45,38 @@ interface IngestResult {
   errors: string[];
 }
 
-export function authorizeUrl(clientId: string, redirectUri: string, state: string): string {
+function b64url(bytes: Uint8Array | ArrayBuffer): string {
+  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let bin = "";
+  for (const b of arr) bin += String.fromCharCode(b);
+  return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+// PKCE verifier: 32 random bytes → 43-char base64url string (RFC 7636 §4.1).
+export function generateCodeVerifier(): string {
+  return b64url(crypto.getRandomValues(new Uint8Array(32)));
+}
+
+// S256 code challenge: base64url(SHA-256(verifier)).
+export async function deriveCodeChallenge(verifier: string): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return b64url(hash);
+}
+
+export function authorizeUrl(
+  clientId: string,
+  redirectUri: string,
+  state: string,
+  codeChallenge: string,
+): string {
   const params = new URLSearchParams({
     response_type: "code",
     client_id: clientId,
     redirect_uri: redirectUri,
     state,
     scope: SCOPES,
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
   });
   return `${OAUTH_AUTHORIZE}?${params.toString()}`;
 }
@@ -63,6 +88,7 @@ export async function exchangeCode(
   clientId: string,
   clientSecret: string,
   redirectUri: string,
+  codeVerifier: string,
 ): Promise<OuraToken> {
   const body = new URLSearchParams({
     grant_type: "authorization_code",
@@ -70,6 +96,7 @@ export async function exchangeCode(
     client_id: clientId,
     client_secret: clientSecret,
     redirect_uri: redirectUri,
+    code_verifier: codeVerifier,
   });
   const res = await fetch(OAUTH_TOKEN, {
     method: "POST",
@@ -88,6 +115,7 @@ export async function exchangeCode(
         client_id: clientId,
         client_secret_len: clientSecret.length,
         redirect_uri: redirectUri,
+        code_verifier_len: codeVerifier.length,
       },
     });
     throw new Error(`Oura token exchange failed: ${res.status} ${text.slice(0, 800)}`);
