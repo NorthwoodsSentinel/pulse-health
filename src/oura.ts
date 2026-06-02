@@ -7,15 +7,18 @@ const API_BASE = "https://api.ouraring.com/v2/usercollection";
 
 const REFRESH_THRESHOLD_MS = 60 * 60 * 1000; // refresh if token expires within 1 hour
 
+// Match Oura's example authorization URL exactly (developer.ouraring.com → app).
 const SCOPES = [
   "email",
   "personal",
   "daily",
   "heartrate",
-  "workout",
   "tag",
+  "workout",
   "session",
   "stress",
+  "heart_health",
+  "spo2",
 ].join(" ");
 
 const FETCHED_KINDS = [
