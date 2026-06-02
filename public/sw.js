@@ -9,6 +9,12 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+// Required for Chrome PWA install criteria — must have a fetch handler.
+// Pure passthrough for now; offline caching can be layered in Step 2.
+self.addEventListener("fetch", (event) => {
+  event.respondWith(fetch(event.request));
+});
+
 self.addEventListener("push", (event) => {
   let data = { title: "pulse-health", body: "", url: "/" };
   if (event.data) {
