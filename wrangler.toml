@@ -8,7 +8,9 @@ workers_dev = true
 [assets]
 directory = "./public"
 binding = "ASSETS"
-not_found_handling = "single-page-application"
+# `not_found_handling = "none"` (default) means non-matching paths fall through
+# to the Worker. Single-page-application mode swallows /api/* before our routes
+# can see them.
 
 [[d1_databases]]
 binding = "DB"
