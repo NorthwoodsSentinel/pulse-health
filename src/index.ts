@@ -395,52 +395,98 @@ export default {
     return env.ASSETS.fetch(req);
   },
 
-  // Daily cron — pulls last 2 days to catch any backfill.
+  // Daily cron — Oura + Strava sequentially.
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(
       (async () => {
-        const startedAt = Date.now();
-        let status = "success";
-        let errorMsg: string | null = null;
-        let rowsAdded = 0;
-        let kindsList = "";
-        try {
-          const access = await oura.getValidAccessToken(
-            env.DB,
-            env.OURA_CLIENT_ID,
-            env.OURA_CLIENT_SECRET,
-          );
-          if (!access) {
-            status = "error";
-            errorMsg = "no oura token";
-            return;
-          }
-          const end = new Date();
-          const start = new Date(end.getTime() - 2 * 24 * 3600 * 1000);
-          const result = await oura.ingestRange(env.DB, access, start, end);
-          rowsAdded = result.rowsAdded;
-          kindsList = result.kinds.join(",");
-          if (result.errors.length > 0) {
-            status = "partial";
-            errorMsg = result.errors.join(" | ");
-          }
-          if (rowsAdded > 0) {
-            await pushAll(
-              env,
-              "Oura digest",
-              `${rowsAdded} new readings — ${result.kinds.join(", ") || "?"}`,
+        // ----- Oura -----
+        {
+          const startedAt = Date.now();
+          let status = "success";
+          let errorMsg: string | null = null;
+          let rowsAdded = 0;
+          let kindsList = "";
+          try {
+            const access = await oura.getValidAccessToken(
+              env.DB,
+              env.OURA_CLIENT_ID,
+              env.OURA_CLIENT_SECRET,
             );
+            if (!access) {
+              status = "error";
+              errorMsg = "no oura token";
+            } else {
+              const end = new Date();
+              const start = new Date(end.getTime() - 2 * 24 * 3600 * 1000);
+              const result = await oura.ingestRange(env.DB, access, start, end);
+              rowsAdded = result.rowsAdded;
+              kindsList = result.kinds.join(",");
+              if (result.errors.length > 0) {
+                status = "partial";
+                errorMsg = result.errors.join(" | ");
+              }
+              if (rowsAdded > 0) {
+                await pushAll(
+                  env,
+                  "Oura digest",
+                  `${rowsAdded} new readings — ${result.kinds.join(", ") || "?"}`,
+                );
+              }
+            }
+          } catch (e) {
+            status = "error";
+            errorMsg = (e as Error).message;
+          } finally {
+            await env.DB.prepare(
+              `INSERT INTO ingest_log (source, started_at, finished_at, kinds, rows_added, rows_seen, status, trigger, error)
+               VALUES ('oura', ?1, ?2, ?3, ?4, 0, ?5, 'cron', ?6)`,
+            )
+              .bind(startedAt, Date.now(), kindsList, rowsAdded, status, errorMsg)
+              .run();
           }
-        } catch (e) {
-          status = "error";
-          errorMsg = (e as Error).message;
-        } finally {
-          await env.DB.prepare(
-            `INSERT INTO ingest_log (source, started_at, finished_at, kinds, rows_added, rows_seen, status, trigger, error)
-             VALUES ('oura', ?1, ?2, ?3, ?4, 0, ?5, 'cron', ?6)`,
-          )
-            .bind(startedAt, Date.now(), kindsList, rowsAdded, status, errorMsg)
-            .run();
+        }
+
+        // ----- Strava (silent no-op if not yet connected) -----
+        {
+          const startedAt = Date.now();
+          let status = "success";
+          let errorMsg: string | null = null;
+          let rowsAdded = 0;
+          let rowsSeen = 0;
+          let kindsList = "";
+          try {
+            const access = await strava.getValidAccessToken(
+              env.DB,
+              env.STRAVA_CLIENT_ID,
+              env.STRAVA_CLIENT_SECRET,
+            );
+            if (!access) return;
+            const result = await strava.ingest(env.DB, access, 7);
+            rowsAdded = result.rowsAdded;
+            rowsSeen = result.rowsSeen;
+            kindsList = result.kinds.join(",");
+            if (result.errors.length > 0) {
+              status = "partial";
+              errorMsg = result.errors.join(" | ");
+            }
+            if (rowsAdded > 0) {
+              await pushAll(
+                env,
+                "Strava digest",
+                `${rowsAdded} new readings — ${result.kinds.join(", ") || "?"}`,
+              );
+            }
+          } catch (e) {
+            status = "error";
+            errorMsg = (e as Error).message;
+          } finally {
+            await env.DB.prepare(
+              `INSERT INTO ingest_log (source, started_at, finished_at, kinds, rows_added, rows_seen, status, trigger, error)
+               VALUES ('strava', ?1, ?2, ?3, ?4, ?5, ?6, 'cron', ?7)`,
+            )
+              .bind(startedAt, Date.now(), kindsList, rowsAdded, rowsSeen, status, errorMsg)
+              .run();
+          }
         }
       })(),
     );
