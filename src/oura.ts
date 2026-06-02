@@ -56,12 +56,8 @@ export function authorizeUrl(clientId: string, redirectUri: string, state: strin
   return `${OAUTH_AUTHORIZE}?${params.toString()}`;
 }
 
-function basicAuthHeader(clientId: string, clientSecret: string): string {
-  // Oura's token endpoint requires HTTP Basic — client_id and client_secret
-  // in the Authorization header, not the body.
-  return `Basic ${btoa(`${clientId}:${clientSecret}`)}`;
-}
-
+// Per reference impl (mitchhankins01/oura-ring-mcp) and Oura's OpenAPI
+// spec: credentials go in the body, not HTTP Basic header.
 export async function exchangeCode(
   code: string,
   clientId: string,
@@ -71,21 +67,32 @@ export async function exchangeCode(
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code,
+    client_id: clientId,
+    client_secret: clientSecret,
     redirect_uri: redirectUri,
   });
   const res = await fetch(OAUTH_TOKEN, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "Authorization": basicAuthHeader(clientId, clientSecret),
-    },
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
   });
+  const text = await res.text();
   if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`Oura token exchange failed: ${res.status} ${t.slice(0, 300)}`);
+    console.log("oura.exchangeCode FAIL", {
+      status: res.status,
+      body: text,
+      sent: {
+        url: OAUTH_TOKEN,
+        grant_type: "authorization_code",
+        code_len: code.length,
+        client_id: clientId,
+        client_secret_len: clientSecret.length,
+        redirect_uri: redirectUri,
+      },
+    });
+    throw new Error(`Oura token exchange failed: ${res.status} ${text.slice(0, 800)}`);
   }
-  return (await res.json()) as OuraToken;
+  return JSON.parse(text) as OuraToken;
 }
 
 export async function refreshAccessToken(
@@ -96,20 +103,20 @@ export async function refreshAccessToken(
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
+    client_id: clientId,
+    client_secret: clientSecret,
   });
   const res = await fetch(OAUTH_TOKEN, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "Authorization": basicAuthHeader(clientId, clientSecret),
-    },
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
   });
+  const text = await res.text();
   if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`Oura token refresh failed: ${res.status} ${t.slice(0, 300)}`);
+    console.log("oura.refreshAccessToken FAIL", { status: res.status, body: text });
+    throw new Error(`Oura token refresh failed: ${res.status} ${text.slice(0, 800)}`);
   }
-  return (await res.json()) as OuraToken;
+  return JSON.parse(text) as OuraToken;
 }
 
 export async function storeToken(
