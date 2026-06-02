@@ -56,6 +56,12 @@ export function authorizeUrl(clientId: string, redirectUri: string, state: strin
   return `${OAUTH_AUTHORIZE}?${params.toString()}`;
 }
 
+function basicAuthHeader(clientId: string, clientSecret: string): string {
+  // Oura's token endpoint requires HTTP Basic — client_id and client_secret
+  // in the Authorization header, not the body.
+  return `Basic ${btoa(`${clientId}:${clientSecret}`)}`;
+}
+
 export async function exchangeCode(
   code: string,
   clientId: string,
@@ -66,12 +72,13 @@ export async function exchangeCode(
     grant_type: "authorization_code",
     code,
     redirect_uri: redirectUri,
-    client_id: clientId,
-    client_secret: clientSecret,
   });
   const res = await fetch(OAUTH_TOKEN, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Authorization": basicAuthHeader(clientId, clientSecret),
+    },
     body: body.toString(),
   });
   if (!res.ok) {
@@ -89,12 +96,13 @@ export async function refreshAccessToken(
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
-    client_id: clientId,
-    client_secret: clientSecret,
   });
   const res = await fetch(OAUTH_TOKEN, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Authorization": basicAuthHeader(clientId, clientSecret),
+    },
     body: body.toString(),
   });
   if (!res.ok) {
