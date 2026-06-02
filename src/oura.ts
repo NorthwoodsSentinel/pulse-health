@@ -120,6 +120,20 @@ export async function exchangeCode(
     });
     throw new Error(`Oura token exchange failed: ${res.status} ${text.slice(0, 800)}`);
   }
+  // Log the EXACT shape of Oura's success response so we know what fields they return.
+  // Redact actual token values; keep token_type, expires_in, scope, and the key names present.
+  try {
+    const parsed = JSON.parse(text);
+    console.log("oura.exchangeCode OK", {
+      keys: Object.keys(parsed),
+      token_type: parsed.token_type,
+      expires_in: parsed.expires_in,
+      scope: parsed.scope,
+      access_token_len: typeof parsed.access_token === "string" ? parsed.access_token.length : null,
+      refresh_token_len: typeof parsed.refresh_token === "string" ? parsed.refresh_token.length : null,
+      access_token_prefix: typeof parsed.access_token === "string" ? parsed.access_token.slice(0, 8) : null,
+    });
+  } catch {}
   return JSON.parse(text) as OuraToken;
 }
 
@@ -213,7 +227,8 @@ async function fetchPaged(
   do {
     const qs = new URLSearchParams(params);
     if (nextToken) qs.set("next_token", nextToken);
-    const res = await fetch(`${API_BASE}${endpoint}?${qs.toString()}`, {
+    const url = `${API_BASE}${endpoint}?${qs.toString()}`;
+    const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {

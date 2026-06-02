@@ -249,7 +249,7 @@ export default {
       const denied = requireAdmin(req, env);
       if (denied) return denied;
       const body = (await req.json().catch(() => ({}))) as { days?: number };
-      const days = Math.max(1, Math.min(90, body.days ?? 2));
+      const days = Math.max(1, Math.min(2000, body.days ?? 2));
       const access = await oura.getValidAccessToken(
         env.DB,
         env.OURA_CLIENT_ID,
