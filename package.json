@@ -1,0 +1,18 @@
+{
+  "name": "pulse-health",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "db:apply": "wrangler d1 execute pulse-health-db --remote --file=shared/schema.sql",
+    "db:migrate": "wrangler d1 migrations apply pulse-health-db --remote",
+    "vapid:generate": "bun shared/generate-vapid.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260601.0",
+    "typescript": "^5.6.3",
+    "wrangler": "^4.92.0"
+  }
+}

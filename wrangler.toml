@@ -1,0 +1,19 @@
+name = "health"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pulse-health-db"
+database_id = "e302bfea-b8a4-47e5-9218-5d020258fc20"
+
+[observability]
+enabled = true

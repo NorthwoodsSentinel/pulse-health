@@ -1,0 +1,19 @@
+{
+  "name": "pulse-health",
+  "short_name": "pulse",
+  "description": "Personal health-data substrate. Push notifications on the Pixel.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#1F2937",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

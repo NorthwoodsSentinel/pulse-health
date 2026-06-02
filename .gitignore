@@ -1,0 +1,11 @@
+node_modules/
+.wrangler/
+dist/
+*.log
+.env
+.env.local
+.dev.vars
+*.key
+*.pem
+vapid-*.txt
+.DS_Store
