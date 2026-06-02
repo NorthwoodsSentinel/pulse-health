@@ -17,3 +17,7 @@ database_id = "e302bfea-b8a4-47e5-9218-5d020258fc20"
 
 [observability]
 enabled = true
+
+# Daily Oura fetch at 13:00 UTC (08:00 CT, after Rob wakes — Oura nightly summary is ready).
+[triggers]
+crons = ["0 13 * * *"]

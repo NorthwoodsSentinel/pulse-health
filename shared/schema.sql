@@ -1,5 +1,6 @@
 -- pulse-health D1 schema
--- Step 1: subscriptions only. Readings/tokens/digests/probes land in Step 2+.
+
+-- ---------- Step 1: subscriptions + push audit ----------
 
 CREATE TABLE IF NOT EXISTS subscriptions (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -16,7 +17,6 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE INDEX IF NOT EXISTS idx_subs_user_active
   ON subscriptions(user_id, active);
 
--- audit: every test/manual push attempt
 CREATE TABLE IF NOT EXISTS push_log (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   sent_at         INTEGER NOT NULL,
@@ -29,3 +29,50 @@ CREATE TABLE IF NOT EXISTS push_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_push_log_sent ON push_log(sent_at DESC);
+
+-- ---------- Step 2: readings (every breadcrumb) ----------
+
+CREATE TABLE IF NOT EXISTS readings (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  source        TEXT NOT NULL,            -- 'oura' | 'strava' | 'garmin'
+  kind          TEXT NOT NULL,            -- 'daily_sleep' | 'daily_readiness' | etc
+  recorded_at   INTEGER NOT NULL,         -- ms epoch — the time the reading REPRESENTS
+  received_at   INTEGER NOT NULL,         -- ms epoch — when we ingested it
+  payload       TEXT NOT NULL,            -- raw JSON from the source
+  UNIQUE (source, kind, recorded_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_readings_source_kind_recorded
+  ON readings(source, kind, recorded_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_readings_source_received
+  ON readings(source, received_at DESC);
+
+-- ---------- Step 2: oauth tokens per source ----------
+
+CREATE TABLE IF NOT EXISTS tokens (
+  source         TEXT PRIMARY KEY,        -- 'oura' | 'strava' | 'garmin'
+  access_token   TEXT NOT NULL,
+  refresh_token  TEXT,
+  expires_at     INTEGER NOT NULL,        -- ms epoch
+  scopes         TEXT,
+  updated_at     INTEGER NOT NULL
+);
+
+-- ---------- Step 2: ingest run log ----------
+
+CREATE TABLE IF NOT EXISTS ingest_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  source      TEXT NOT NULL,
+  started_at  INTEGER NOT NULL,
+  finished_at INTEGER,
+  kinds       TEXT,             -- comma-separated list of kinds ingested
+  rows_added  INTEGER DEFAULT 0,
+  rows_seen   INTEGER DEFAULT 0,
+  status      TEXT NOT NULL,    -- 'success' | 'partial' | 'error'
+  error       TEXT,
+  trigger     TEXT              -- 'cron' | 'manual' | 'oauth_callback'
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingest_log_source_started
+  ON ingest_log(source, started_at DESC);
