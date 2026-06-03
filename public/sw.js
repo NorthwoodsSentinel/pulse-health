@@ -25,13 +25,18 @@ self.addEventListener("push", (event) => {
       data.body = event.data.text();
     }
   }
+  // Unique tag per push so each notification announces itself instead of
+  // silently replacing the previous one in the tray. requireInteraction
+  // keeps it on screen until you act.
   event.waitUntil(
     self.registration.showNotification(data.title, {
       body: data.body,
       icon: "/icons/icon.svg",
       badge: "/icons/icon.svg",
-      tag: "pulse-health",
+      tag: `pulse-${Date.now()}`,
       renotify: true,
+      requireInteraction: false,
+      vibrate: [200, 100, 200],
       data: { url: data.url ?? "/" },
     }),
   );
