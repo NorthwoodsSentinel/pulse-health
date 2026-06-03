@@ -1,26 +1,138 @@
-// pulse-health PWA boot.
-// - Registers service worker
-// - Asks for notification permission
-// - Subscribes to Web Push and POSTs the subscription to /api/subscribe
+// pulse-health PWA: dashboard + push subscription.
 
-const logEl = document.getElementById("log");
-const btn = document.getElementById("subscribe-btn");
-const permPill = document.getElementById("perm-pill");
-const swPill = document.getElementById("sw-pill");
-const subPill = document.getElementById("sub-pill");
-
-const lines = [];
-function log(msg) {
-  const stamp = new Date().toLocaleTimeString();
-  lines.push(`${stamp}  ${msg}`);
-  while (lines.length > 40) lines.shift();
-  logEl.textContent = lines.join("\n");
-}
+const $ = (id) => document.getElementById(id);
 
 function pill(el, state, text) {
   el.className = `pill ${state}`;
   el.textContent = text;
 }
+
+function fmtAgo(ms) {
+  if (!ms) return "—";
+  const d = Date.now() - ms;
+  if (d < 60_000) return "just now";
+  if (d < 3600_000) return `${Math.floor(d / 60_000)}m ago`;
+  if (d < 86400_000) return `${Math.floor(d / 3600_000)}h ago`;
+  return `${Math.floor(d / 86400_000)}d ago`;
+}
+
+function fmtDate(iso) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString(undefined, {
+    weekday: "short", month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit",
+  });
+}
+
+function fmtDuration(s) {
+  if (!s) return "—";
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
+}
+
+function scoreClass(n) {
+  if (n == null) return "idle";
+  if (n >= 80) return "good";
+  if (n >= 60) return "warn";
+  return "bad";
+}
+
+function fmtDistanceMi(m) {
+  if (!m) return "—";
+  return `${(m / 1609.344).toFixed(2)} mi`;
+}
+
+function fmtSpeedMph(mps) {
+  if (!mps) return "—";
+  return `${(mps * 2.23694).toFixed(1)} mph`;
+}
+
+// ---------- dashboard render ----------
+
+async function loadDigest() {
+  try {
+    const res = await fetch("/api/digest");
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    const data = await res.json();
+    renderOura(data.oura);
+    renderStrava(data.strava);
+    $("last-updated").textContent = `updated ${fmtAgo(data.generated_at)}`;
+  } catch (e) {
+    $("oura-content").innerHTML = `<div class="skeleton">load failed: ${e.message}</div>`;
+    $("strava-content").innerHTML = "";
+  }
+}
+
+function renderOura(o) {
+  if (!o || (o.sleep_score == null && o.readiness_score == null)) {
+    $("oura-content").innerHTML = `<div class="skeleton">no Oura data yet</div>`;
+    $("oura-stamp").textContent = "";
+    return;
+  }
+  $("oura-stamp").textContent = o.day || "";
+
+  const html = `
+    <div class="scores">
+      <div class="score-box">
+        <div class="score-label">Sleep</div>
+        <div class="score-value score-${scoreClass(o.sleep_score)}">${o.sleep_score ?? "—"}</div>
+      </div>
+      <div class="score-box">
+        <div class="score-label">Readiness</div>
+        <div class="score-value score-${scoreClass(o.readiness_score)}">${o.readiness_score ?? "—"}</div>
+      </div>
+    </div>
+    <div class="row"><span class="key">Avg HRV</span><span class="val">${o.avg_hrv ?? "—"}${o.avg_hrv ? " ms" : ""}</span></div>
+    <div class="row"><span class="key">Avg HR</span><span class="val">${o.avg_hr ? o.avg_hr.toFixed(1) : "—"}${o.avg_hr ? " bpm" : ""}</span></div>
+    <div class="row"><span class="key">Total sleep</span><span class="val">${fmtDuration(o.total_sleep_seconds)}</span></div>
+    <div class="row"><span class="key">Time in bed</span><span class="val">${fmtDuration(o.time_in_bed_seconds)}</span></div>
+    <div class="row"><span class="key">Bedtime</span><span class="val">${fmtDate(o.bedtime_start)}</span></div>
+    <div class="row"><span class="key">Body temp deviation</span><span class="val">${o.temperature_deviation != null ? o.temperature_deviation.toFixed(2) + " °C" : "—"}</span></div>
+    ${o.readiness_contributors ? renderContributors(o.readiness_contributors, "Readiness contributors") : ""}
+    ${o.sleep_contributors ? renderContributors(o.sleep_contributors, "Sleep contributors") : ""}
+  `;
+  $("oura-content").innerHTML = html;
+}
+
+function renderContributors(c, label) {
+  const entries = Object.entries(c).sort((a, b) => a[1] - b[1]);
+  const pills = entries
+    .map(([k, v]) => `<span class="ch">${k.replaceAll("_", " ")}<b>${v}</b></span>`)
+    .join("");
+  return `
+    <details style="margin-top:8px;">
+      <summary>${label}</summary>
+      <div class="ch-row">${pills}</div>
+    </details>`;
+}
+
+function renderStrava(s) {
+  if (!s) {
+    $("strava-content").innerHTML = `<div class="skeleton">no Strava activity yet</div>`;
+    $("strava-stamp").textContent = "";
+    return;
+  }
+  $("strava-stamp").textContent = s.type;
+  const html = `
+    <div class="activity-name">${escapeHtml(s.name)}</div>
+    <div class="activity-sub">${fmtDate(s.start_date_local)}</div>
+    <div class="row"><span class="key">Distance</span><span class="val">${fmtDistanceMi(s.distance_m)}</span></div>
+    <div class="row"><span class="key">Moving time</span><span class="val">${fmtDuration(s.moving_time_s)}</span></div>
+    <div class="row"><span class="key">Elevation gain</span><span class="val">${s.total_elevation_gain_m ? Math.round(s.total_elevation_gain_m) + " m" : "—"}</span></div>
+    <div class="row"><span class="key">Avg speed</span><span class="val">${fmtSpeedMph(s.average_speed_mps)}</span></div>
+    ${s.average_heartrate ? `<div class="row"><span class="key">Avg HR / Max</span><span class="val">${Math.round(s.average_heartrate)} / ${Math.round(s.max_heartrate)} bpm</span></div>` : ""}
+    ${s.average_watts ? `<div class="row"><span class="key">Avg power</span><span class="val">${Math.round(s.average_watts)} W</span></div>` : ""}
+    <div class="row"><span class="key">Kudos</span><span class="val">${s.kudos_count ?? 0}</span></div>
+  `;
+  $("strava-content").innerHTML = html;
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+}
+
+// ---------- push subscription ----------
 
 function b64urlToUint8(b64url) {
   const pad = "=".repeat((4 - (b64url.length % 4)) % 4);
@@ -38,120 +150,63 @@ function bufToB64url(buf) {
   return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
-async function boot() {
-  if (!("serviceWorker" in navigator)) {
-    pill(swPill, "bad", "unsupported");
-    log("Service workers not supported in this browser.");
-    btn.textContent = "Unsupported browser";
-    return;
-  }
-  if (!("PushManager" in window)) {
-    pill(swPill, "bad", "no push");
-    log("Push API not supported in this browser.");
+async function bootPush() {
+  const permEl = $("perm-pill"), swEl = $("sw-pill"), subEl = $("sub-pill"), btn = $("subscribe-btn");
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    pill(swEl, "bad", "unsupported");
     btn.textContent = "Push not supported";
     return;
   }
-
-  // 1. Register service worker.
-  log("Registering service worker…");
   const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
   await navigator.serviceWorker.ready;
-  pill(swPill, "good", "registered");
-  log("Service worker ready.");
-
-  // 2. Check permission.
-  const perm = Notification.permission;
-  pill(
-    permPill,
-    perm === "granted" ? "good" : perm === "denied" ? "bad" : "warn",
-    perm,
-  );
-
-  // 3. Check existing subscription.
-  let sub = await reg.pushManager.getSubscription();
+  pill(swEl, "good", "registered");
+  pill(permEl, Notification.permission === "granted" ? "good" : Notification.permission === "denied" ? "bad" : "warn", Notification.permission);
+  const sub = await reg.pushManager.getSubscription();
   if (sub) {
-    pill(subPill, "good", "subscribed");
-    btn.textContent = "Subscribed — re-subscribe";
-    log("Existing subscription found. Endpoint: " + sub.endpoint.slice(0, 60) + "…");
+    pill(subEl, "good", "subscribed");
+    btn.textContent = "Re-subscribe";
   } else {
-    pill(subPill, "warn", "not yet");
-    btn.textContent = perm === "granted" ? "Subscribe to push" : "Allow notifications + subscribe";
+    pill(subEl, "warn", "not yet");
+    btn.textContent = Notification.permission === "granted" ? "Subscribe" : "Allow + subscribe";
   }
   btn.disabled = false;
-
   btn.addEventListener("click", () => subscribe(reg));
 }
 
 async function subscribe(reg) {
-  btn.disabled = true;
-  btn.textContent = "Working…";
+  const btn = $("subscribe-btn"), permEl = $("perm-pill"), subEl = $("sub-pill");
+  btn.disabled = true; btn.textContent = "Working…";
   try {
-    // 1. Ensure permission.
     if (Notification.permission !== "granted") {
-      log("Requesting notification permission…");
       const result = await Notification.requestPermission();
-      pill(
-        permPill,
-        result === "granted" ? "good" : result === "denied" ? "bad" : "warn",
-        result,
-      );
-      if (result !== "granted") {
-        log("Permission " + result + " — cannot subscribe.");
-        btn.disabled = false;
-        btn.textContent = "Permission denied";
-        return;
-      }
+      pill(permEl, result === "granted" ? "good" : result === "denied" ? "bad" : "warn", result);
+      if (result !== "granted") { btn.textContent = "Permission denied"; btn.disabled = false; return; }
     }
-
-    // 2. Fetch VAPID public key.
-    log("Fetching VAPID public key…");
     const r = await fetch("/api/vapid-public-key");
-    const { key: vapidPublic } = await r.json();
-    if (!vapidPublic) {
-      log("Server did not return a VAPID public key.");
-      btn.disabled = false;
-      btn.textContent = "Server error";
-      return;
-    }
-
-    // 3. Subscribe.
-    log("Calling pushManager.subscribe()…");
+    const { key } = await r.json();
     const existing = await reg.pushManager.getSubscription();
     if (existing) await existing.unsubscribe();
     const sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: b64urlToUint8(vapidPublic),
+      applicationServerKey: b64urlToUint8(key),
     });
-
-    // 4. POST to server.
-    const p256dh = bufToB64url(sub.getKey("p256dh"));
-    const auth = bufToB64url(sub.getKey("auth"));
-    log("Registering subscription with backend…");
-    const post = await fetch("/api/subscribe", {
+    await fetch("/api/subscribe", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         endpoint: sub.endpoint,
-        keys: { p256dh, auth },
+        keys: { p256dh: bufToB64url(sub.getKey("p256dh")), auth: bufToB64url(sub.getKey("auth")) },
         userAgent: navigator.userAgent,
       }),
     });
-    if (!post.ok) {
-      const t = await post.text().catch(() => "");
-      log("Backend rejected subscribe: " + post.status + " " + t.slice(0, 200));
-      btn.disabled = false;
-      btn.textContent = "Retry subscribe";
-      return;
-    }
-    pill(subPill, "good", "subscribed");
-    log("Subscribed. Ask Margin to fire a test push.");
-    btn.textContent = "Subscribed — re-subscribe";
+    pill(subEl, "good", "subscribed");
+    btn.textContent = "Re-subscribe";
     btn.disabled = false;
   } catch (e) {
-    log("Error: " + (e && e.message ? e.message : String(e)));
+    btn.textContent = "Retry";
     btn.disabled = false;
-    btn.textContent = "Retry subscribe";
   }
 }
 
-boot().catch((e) => log("boot failed: " + e.message));
+loadDigest();
+bootPush();

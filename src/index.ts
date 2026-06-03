@@ -391,6 +391,73 @@ export default {
       return json({ source: "strava", latest: rows });
     }
 
+    // -------- Aggregated digest for the dashboard --------
+    if (path === "/api/digest" && method === "GET") {
+      // Latest daily_sleep + daily_readiness + daily_stress for today (and yesterday fallback).
+      const ouraRow = await env.DB.prepare(
+        `SELECT kind, payload, recorded_at FROM readings
+         WHERE source = 'oura'
+           AND kind IN ('daily_sleep','daily_readiness','daily_stress','sleep')
+         ORDER BY recorded_at DESC
+         LIMIT 12`,
+      ).all<{ kind: string; payload: string; recorded_at: number }>();
+
+      const byKind: Record<string, { payload: any; recorded_at: number }> = {};
+      for (const r of ouraRow.results ?? []) {
+        if (!byKind[r.kind]) {
+          byKind[r.kind] = { payload: JSON.parse(r.payload), recorded_at: r.recorded_at };
+        }
+      }
+
+      // Latest Strava activity
+      const stravaActivity = await env.DB.prepare(
+        `SELECT payload, recorded_at FROM readings
+         WHERE source = 'strava' AND kind = 'activity'
+         ORDER BY recorded_at DESC LIMIT 1`,
+      ).first<{ payload: string; recorded_at: number }>();
+
+      const ds = byKind["daily_sleep"]?.payload;
+      const dr = byKind["daily_readiness"]?.payload;
+      const stress = byKind["daily_stress"]?.payload;
+      const sleep = byKind["sleep"]?.payload;
+      const act = stravaActivity ? JSON.parse(stravaActivity.payload) : null;
+
+      return json({
+        generated_at: Date.now(),
+        oura: {
+          day: ds?.day ?? dr?.day ?? null,
+          sleep_score: ds?.score ?? null,
+          sleep_contributors: ds?.contributors ?? null,
+          readiness_score: dr?.score ?? null,
+          readiness_contributors: dr?.contributors ?? null,
+          temperature_deviation: dr?.temperature_deviation ?? null,
+          stress_high_seconds: stress?.stress_high ?? null,
+          recovery_high_seconds: stress?.recovery_high ?? null,
+          avg_hrv: sleep?.average_hrv ?? null,
+          avg_hr: sleep?.average_heart_rate ?? null,
+          time_in_bed_seconds: sleep?.time_in_bed ?? null,
+          total_sleep_seconds: sleep?.total_sleep_duration ?? null,
+          bedtime_start: sleep?.bedtime_start ?? null,
+          bedtime_end: sleep?.bedtime_end ?? null,
+        },
+        strava: act
+          ? {
+              name: act.name,
+              type: act.sport_type ?? act.type,
+              start_date_local: act.start_date_local,
+              distance_m: act.distance,
+              moving_time_s: act.moving_time,
+              total_elevation_gain_m: act.total_elevation_gain,
+              average_speed_mps: act.average_speed,
+              average_heartrate: act.average_heartrate,
+              max_heartrate: act.max_heartrate,
+              average_watts: act.average_watts,
+              kudos_count: act.kudos_count,
+            }
+          : null,
+      });
+    }
+
     // -------- Static assets --------
     return env.ASSETS.fetch(req);
   },
