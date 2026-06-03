@@ -37,7 +37,7 @@ Periodically (quarterly), verify the 1Password copy still matches what's deploye
 
 ```bash
 # Server-side: fingerprint of currently-installed public key
-curl -s https://health.robert-chuvala.workers.dev/api/vapid-public-key | jq -r .key | sha256sum
+curl -s https://<your-worker>.workers.dev/api/vapid-public-key | jq -r .key | sha256sum
 ```
 
 The same SHA-256 should be computable from the public key stored in 1Password. If they diverge, the deploy was rotated without updating the backup.

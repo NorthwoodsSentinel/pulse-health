@@ -10,7 +10,7 @@ What to do when something rings the wrong bell.
    - Subscribed but pushes silent → continue to #2.
 2. From any shell:
    ```bash
-   curl -X POST https://health.robert-chuvala.workers.dev/api/test-push \
+   curl -X POST https://<your-worker>.workers.dev/api/test-push \
      -H "Authorization: Bearer $ADMIN_TOKEN" \
      -d '{"title": "diag", "body": "diag"}'
    ```

@@ -19,7 +19,7 @@ Goal: prove a push notification can be triggered from a Worker and land on the P
 
 Components:
 
-- **Worker `health`** at `health.robert-chuvala.workers.dev`
+- **Worker `health`** at `<your-worker>.workers.dev`
   - Serves PWA static files via `ASSETS` binding
   - `GET /api/health` — status
   - `GET /api/vapid-public-key` — public key for PWA `pushManager.subscribe()`
