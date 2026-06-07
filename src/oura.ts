@@ -313,3 +313,85 @@ export async function latestReadings(
     .all<{ kind: string; recorded_at: number; received_at: number }>();
   return rows.results ?? [];
 }
+
+// Pull the most-recent stored payload for a kind, JSON-parsed.
+async function latestPayload(db: D1Database, kind: string): Promise<{ recorded_at: number; payload: any } | null> {
+  const row = await db
+    .prepare(
+      `SELECT recorded_at, payload FROM readings
+       WHERE source = 'oura' AND kind = ?1
+       ORDER BY recorded_at DESC LIMIT 1`,
+    )
+    .bind(kind)
+    .first<{ recorded_at: number; payload: string }>();
+  if (!row) return null;
+  try {
+    return { recorded_at: row.recorded_at, payload: JSON.parse(row.payload) };
+  } catch {
+    return { recorded_at: row.recorded_at, payload: null };
+  }
+}
+
+// One-line recovery brief — readiness, HRV, sleep, temp delta, derived signal.
+// Built for the morning brief's nervous-system-load line. Open read (matches /latest).
+export async function briefForToday(db: D1Database): Promise<{
+  as_of: number | null;
+  readiness: number | null;
+  hrv_avg_ms: number | null;
+  sleep_score: number | null;
+  activity_score: number | null;
+  body_temperature_deviation_c: number | null;
+  recovery_signal: "recovering" | "balanced" | "strained" | "unknown";
+  sources: Record<string, number | null>;
+}> {
+  const [readiness, sleep, dailySleep, dailyActivity] = await Promise.all([
+    latestPayload(db, "daily_readiness"),
+    latestPayload(db, "sleep"),
+    latestPayload(db, "daily_sleep"),
+    latestPayload(db, "daily_activity"),
+  ]);
+
+  // Oura v2 known fields (defensive: optional chaining throughout):
+  //   daily_readiness.payload.score                       (int 0-100)
+  //   daily_readiness.payload.temperature_deviation       (float °C, may be null)
+  //   sleep.payload.average_hrv                           (int ms; sometimes hrv.average)
+  //   daily_sleep.payload.score                           (int 0-100)
+  //   daily_activity.payload.score                        (int 0-100)
+  const readinessScore: number | null = readiness?.payload?.score ?? null;
+  const sleepScore: number | null = dailySleep?.payload?.score ?? null;
+  const activityScore: number | null = dailyActivity?.payload?.score ?? null;
+  const tempDelta: number | null = readiness?.payload?.temperature_deviation ?? null;
+  const hrvAvg: number | null =
+    sleep?.payload?.average_hrv ?? sleep?.payload?.hrv?.average ?? null;
+
+  // Recovery signal — simple threshold off readiness + HRV trend slot.
+  // Not a clinical claim; a hint for the morning brief's one-line nervous-system-load criterion.
+  let recovery: "recovering" | "balanced" | "strained" | "unknown" = "unknown";
+  if (readinessScore !== null) {
+    if (readinessScore >= 80) recovery = "recovering";
+    else if (readinessScore >= 65) recovery = "balanced";
+    else recovery = "strained";
+  }
+
+  // as_of = most recent recorded_at across the four kinds (so callers know data freshness).
+  const recordedAts = [readiness?.recorded_at, sleep?.recorded_at, dailySleep?.recorded_at, dailyActivity?.recorded_at].filter(
+    (v): v is number => typeof v === "number",
+  );
+  const asOf = recordedAts.length ? Math.max(...recordedAts) : null;
+
+  return {
+    as_of: asOf,
+    readiness: readinessScore,
+    hrv_avg_ms: hrvAvg,
+    sleep_score: sleepScore,
+    activity_score: activityScore,
+    body_temperature_deviation_c: tempDelta,
+    recovery_signal: recovery,
+    sources: {
+      daily_readiness: readiness?.recorded_at ?? null,
+      sleep: sleep?.recorded_at ?? null,
+      daily_sleep: dailySleep?.recorded_at ?? null,
+      daily_activity: dailyActivity?.recorded_at ?? null,
+    },
+  };
+}

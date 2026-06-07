@@ -10,6 +10,7 @@
 //   GET  /api/oura/callback         → handles code exchange + initial 30-day ingest
 //   POST /api/oura/sync             → manual ingest of last N days (admin)
 //   GET  /api/oura/latest           → latest reading per kind
+//   GET  /api/brief                 → one-line recovery brief (readiness/HRV/sleep/temp/signal)
 //
 // Scheduled: daily Oura fetch at 13:00 UTC (08:00 CT).
 
@@ -287,6 +288,11 @@ export default {
     if (path === "/api/oura/latest" && method === "GET") {
       const rows = await oura.latestReadings(env.DB);
       return json({ source: "oura", latest: rows });
+    }
+
+    if (path === "/api/brief" && method === "GET") {
+      const brief = await oura.briefForToday(env.DB);
+      return json({ source: "pulse-health", brief });
     }
 
     // -------- Strava --------
