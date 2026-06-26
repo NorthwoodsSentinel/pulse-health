@@ -7,6 +7,17 @@ const API_BASE = "https://api.ouraring.com/v2/usercollection";
 
 const REFRESH_THRESHOLD_MS = 60 * 60 * 1000; // refresh if token expires within 1 hour
 
+// Fail-loud staleness thresholds (Oura summaries finalize daily; cron runs once/day).
+//   STALE_BRIEF_HOURS  — /api/brief flags `stale` when the freshest reading (recorded_at,
+//                        midnight-anchored) is older than this. Healthy data peaks ~37h
+//                        just before the next daily cron, so 48h avoids false positives
+//                        while still catching a missed day.
+//   STALE_INGEST_HOURS — cron alerts when the last SUCCESSFUL ingest (received_at) is older
+//                        than this. A healthy daily cron writes at most ~24h apart, so 30h
+//                        catches a single missed/failed ingest.
+export const STALE_BRIEF_HOURS = 48;
+export const STALE_INGEST_HOURS = 30;
+
 // Match Oura's example authorization URL exactly (developer.ouraring.com → app).
 const SCOPES = [
   "email",
@@ -336,6 +347,8 @@ async function latestPayload(db: D1Database, kind: string): Promise<{ recorded_a
 // Built for the morning brief's nervous-system-load line. Open read (matches /latest).
 export async function briefForToday(db: D1Database): Promise<{
   as_of: number | null;
+  stale: boolean;
+  data_age_hours: number | null;
   readiness: number | null;
   hrv_avg_ms: number | null;
   sleep_score: number | null;
@@ -379,8 +392,16 @@ export async function briefForToday(db: D1Database): Promise<{
   );
   const asOf = recordedAts.length ? Math.max(...recordedAts) : null;
 
+  // Fail-loud freshness guard. The brief must never read a confident "balanced" while
+  // silently serving a frozen datapoint (silence is not an acceptable state).
+  const dataAgeHours = asOf === null ? null : (Date.now() - asOf) / 3_600_000;
+  const stale = asOf === null || dataAgeHours! > STALE_BRIEF_HOURS;
+  if (stale) recovery = "unknown";
+
   return {
     as_of: asOf,
+    stale,
+    data_age_hours: dataAgeHours === null ? null : Math.round(dataAgeHours * 10) / 10,
     readiness: readinessScore,
     hrv_avg_ms: hrvAvg,
     sleep_score: sleepScore,
@@ -393,5 +414,25 @@ export async function briefForToday(db: D1Database): Promise<{
       daily_sleep: dailySleep?.recorded_at ?? null,
       daily_activity: dailyActivity?.recorded_at ?? null,
     },
+  };
+}
+
+// Ingest freshness — when did we LAST successfully write any Oura reading?
+// Drives the cron's fail-loud alert. Distinct from briefForToday's `as_of`
+// (recorded_at, the data's day) — this is received_at, the ingest's health.
+export async function feedFreshness(db: D1Database): Promise<{
+  last_received_at: number | null;
+  ingest_age_hours: number | null;
+  stale: boolean;
+}> {
+  const row = await db
+    .prepare(`SELECT MAX(received_at) AS last FROM readings WHERE source = 'oura'`)
+    .first<{ last: number | null }>();
+  const last = row?.last ?? null;
+  const ageHours = last === null ? null : (Date.now() - last) / 3_600_000;
+  return {
+    last_received_at: last,
+    ingest_age_hours: ageHours === null ? null : Math.round(ageHours * 10) / 10,
+    stale: ageHours === null || ageHours > STALE_INGEST_HOURS,
   };
 }
