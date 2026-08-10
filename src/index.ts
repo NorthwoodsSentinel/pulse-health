@@ -517,6 +517,30 @@ export default {
               .bind(startedAt, Date.now(), kindsList, rowsAdded, status, errorMsg)
               .run();
           }
+
+          // ----- Fail-loud staleness guard -----
+          // Silence is not an acceptable state. A failed ingest (e.g. Oura refresh-token
+          // revoked → invalid_grant; the worker cannot self-heal — Rob must re-auth at
+          // /api/oura/connect) must SURFACE, not just sit in ingest_log while /api/brief
+          // keeps serving a frozen "balanced" reading.
+          const alerts: string[] = [];
+          if (status === "error") {
+            alerts.push(
+              `Oura ingest FAILED: ${errorMsg ?? "unknown"}. Re-auth may be required → /api/oura/connect`,
+            );
+          }
+          const fresh = await oura.feedFreshness(env.DB);
+          if (fresh.stale) {
+            const ageTxt =
+              fresh.ingest_age_hours === null ? "never" : `${Math.round(fresh.ingest_age_hours)}h ago`;
+            alerts.push(
+              `Pulse-health feed STALE — last successful ingest ${ageTxt}. Brief is serving frozen data; re-auth at /api/oura/connect`,
+            );
+          }
+          if (alerts.length) {
+            console.log("pulse-health ALERT", { alerts });
+            await pushAll(env, "⚠️ Pulse-health", alerts.join(" | "), "/");
+          }
         }
 
         // ----- Strava (silent no-op if not yet connected) -----
