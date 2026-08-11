@@ -343,6 +343,38 @@ async function latestPayload(db: D1Database, kind: string): Promise<{ recorded_a
   }
 }
 
+// Most recent row for `kind` whose payload actually carries a scored value at one of `paths`.
+//
+// WHY THIS EXISTS (2026-08-11): /api/brief reported `hrv_avg_ms: null` while 56 nights of HRV sat in
+// D1, because latestPayload() takes the newest row full stop — and the newest sleep row was an
+// unscored session (a 25-minute nap, ingested before Oura scored it). ONE incomplete row blanked the
+// whole field, and the surface then read as "the instrument is dark" when the substrate was fine.
+// Same class as everything found that day: absence reported where none exists.
+//
+// Returns the reading WITH ITS OWN recorded_at, so a caller can never mistake an older scored value
+// for a current one. A value without its date is how a stale number gets read as fresh.
+async function latestScoredPayload(
+  db: D1Database,
+  kind: string,
+  paths: string[],
+): Promise<{ recorded_at: number; payload: any } | null> {
+  const cond = paths.map((p) => `json_extract(payload, '${p}') IS NOT NULL`).join(" OR ");
+  const row = await db
+    .prepare(
+      `SELECT recorded_at, payload FROM readings
+       WHERE source = 'oura' AND kind = ?1 AND (${cond})
+       ORDER BY recorded_at DESC LIMIT 1`,
+    )
+    .bind(kind)
+    .first<{ recorded_at: number; payload: string }>();
+  if (!row) return null;
+  try {
+    return { recorded_at: row.recorded_at, payload: JSON.parse(row.payload) };
+  } catch {
+    return { recorded_at: row.recorded_at, payload: null };
+  }
+}
+
 // One-line recovery brief — readiness, HRV, sleep, temp delta, derived signal.
 // Built for the morning brief's nervous-system-load line. Open read (matches /latest).
 export async function briefForToday(db: D1Database): Promise<{
@@ -351,17 +383,21 @@ export async function briefForToday(db: D1Database): Promise<{
   data_age_hours: number | null;
   readiness: number | null;
   hrv_avg_ms: number | null;
+  hrv_as_of: number | null;
+  hrv_age_hours: number | null;
   sleep_score: number | null;
   activity_score: number | null;
   body_temperature_deviation_c: number | null;
   recovery_signal: "recovering" | "balanced" | "strained" | "unknown";
   sources: Record<string, number | null>;
 }> {
-  const [readiness, sleep, dailySleep, dailyActivity] = await Promise.all([
+  const [readiness, sleep, dailySleep, dailyActivity, scoredSleep] = await Promise.all([
     latestPayload(db, "daily_readiness"),
     latestPayload(db, "sleep"),
     latestPayload(db, "daily_sleep"),
     latestPayload(db, "daily_activity"),
+    // HRV comes from the newest SCORED sleep row, not simply the newest one. See latestScoredPayload.
+    latestScoredPayload(db, "sleep", ["$.average_hrv", "$.hrv.average"]),
   ]);
 
   // Oura v2 known fields (defensive: optional chaining throughout):
@@ -374,8 +410,25 @@ export async function briefForToday(db: D1Database): Promise<{
   const sleepScore: number | null = dailySleep?.payload?.score ?? null;
   const activityScore: number | null = dailyActivity?.payload?.score ?? null;
   const tempDelta: number | null = readiness?.payload?.temperature_deviation ?? null;
+  // Prefer the newest row that actually has a value; fall back to the newest row so behaviour is
+  // unchanged when the latest reading IS scored (the common case).
   const hrvAvg: number | null =
-    sleep?.payload?.average_hrv ?? sleep?.payload?.hrv?.average ?? null;
+    scoredSleep?.payload?.average_hrv ??
+    scoredSleep?.payload?.hrv?.average ??
+    sleep?.payload?.average_hrv ??
+    sleep?.payload?.hrv?.average ??
+    null;
+  // The HRV reading's OWN timestamp — may legitimately be older than as_of when the newest sleep
+  // session has not been scored yet. Reporting it is the difference between "no HRV" and
+  // "HRV from two nights ago", which are opposite conclusions.
+  const hrvAsOf: number | null =
+    (scoredSleep?.payload?.average_hrv ?? scoredSleep?.payload?.hrv?.average) != null
+      ? scoredSleep!.recorded_at
+      : hrvAvg !== null
+        ? (sleep?.recorded_at ?? null)
+        : null;
+  const hrvAgeHours: number | null =
+    hrvAsOf === null ? null : Math.round(((Date.now() - hrvAsOf) / 3_600_000) * 10) / 10;
 
   // Recovery signal — simple threshold off readiness + HRV trend slot.
   // Not a clinical claim; a hint for the morning brief's one-line nervous-system-load criterion.
@@ -404,6 +457,8 @@ export async function briefForToday(db: D1Database): Promise<{
     data_age_hours: dataAgeHours === null ? null : Math.round(dataAgeHours * 10) / 10,
     readiness: readinessScore,
     hrv_avg_ms: hrvAvg,
+    hrv_as_of: hrvAsOf,
+    hrv_age_hours: hrvAgeHours,
     sleep_score: sleepScore,
     activity_score: activityScore,
     body_temperature_deviation_c: tempDelta,
