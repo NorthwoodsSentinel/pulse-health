@@ -18,6 +18,7 @@ import { sendPush } from "./push";
 import { signState, verifyState } from "./oauth";
 import * as oura from "./oura";
 import * as strava from "./strava";
+import * as drift from "./drift";
 
 export interface Env {
   DB: D1Database;
@@ -288,6 +289,17 @@ export default {
     if (path === "/api/oura/latest" && method === "GET") {
       const rows = await oura.latestReadings(env.DB);
       return json({ source: "oura", latest: rows });
+    }
+
+    // Drift watcher (2026-08-15): Rob's FLOW_ALIGNMENT signals from data already here.
+    if (path === "/api/drift" && method === "GET") {
+      const report = await drift.evaluateDrift(env.DB);
+      return json({ source: "pulse-health", drift: report, would_push: drift.driftMessage(report) });
+    }
+
+    if (path === "/api/drift/log" && method === "GET") {
+      const rows = await env.DB.prepare(`SELECT at, verdict, fired, pushed FROM drift_log ORDER BY at DESC LIMIT 14`).all().catch(() => ({ results: [] }));
+      return json({ source: "pulse-health", drift_log: rows.results || [] });
     }
 
     if (path === "/api/brief" && method === "GET") {
@@ -584,6 +596,26 @@ export default {
               .bind(startedAt, Date.now(), kindsList, rowsAdded, rowsSeen, status, errorMsg)
               .run();
           }
+        }
+
+        // ----- Drift watcher (2026-08-15) -----
+        // Rob: "what watches and makes sure I am regulated." Evaluate his own drift signals
+        // (rides/28d, HRV 7v21, sleep 7v21) after ingest; push ONE line from his grounding set
+        // when two fire, and the five monthly questions on the 1st. Log every evaluation so
+        // silence is inspectable (/api/drift, drift_log). Never a plan, never a lecture.
+        try {
+          const report = await drift.evaluateDrift(env.DB);
+          const msg = drift.driftMessage(report);
+          let pushed = false;
+          if (msg) {
+            const n = await pushAll(env, msg.title, msg.body, "/");
+            pushed = n > 0;
+            // Also mirror to the fleet ntfy topic so CeeCee's estate sees the same signal.
+            await fetch("https://ntfy.sh/fleet-watch", { method: "POST", headers: { Title: `health: ${msg.title}`, Priority: "3", Tags: "bike,leaves" }, body: msg.body }).catch(() => {});
+          }
+          await drift.logDrift(env.DB, report, pushed);
+        } catch (e) {
+          await pushAll(env, "Drift watcher FAILED", (e as Error).message).catch(() => {});
         }
       })(),
     );
