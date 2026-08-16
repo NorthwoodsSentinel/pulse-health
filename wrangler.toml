@@ -22,4 +22,4 @@ enabled = true
 
 # Daily Oura fetch at 13:00 UTC (08:00 CT, after Rob wakes — Oura nightly summary is ready).
 [triggers]
-crons = ["0 13 * * *"]
+crons = ["0 13 * * *", "*/2 * * * *"]

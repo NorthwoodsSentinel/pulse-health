@@ -609,13 +609,19 @@ export default {
           let pushed = false;
           if (msg) {
             const n = await pushAll(env, msg.title, msg.body, "/");
-            pushed = n > 0;
+            pushed = n > 0; // pushAll returns successful deliveries; 0 = no live subscription = NOT delivered
             // Also mirror to the fleet ntfy topic so CeeCee's estate sees the same signal.
             await fetch("https://ntfy.sh/fleet-watch", { method: "POST", headers: { Title: `health: ${msg.title}`, Priority: "3", Tags: "bike,leaves" }, body: msg.body }).catch(() => {});
           }
           await drift.logDrift(env.DB, report, pushed);
         } catch (e) {
-          await pushAll(env, "Drift watcher FAILED", (e as Error).message).catch(() => {});
+          // FAIL LOUD on an INDEPENDENT channel (ntfy), not only the push channel under test,
+          // and leave a row so /api/drift/log shows the failure instead of silence.
+          const msg = `Drift watcher FAILED: ${(e as Error).message}`;
+          await fetch("https://ntfy.sh/fleet-watch", { method: "POST", headers: { Title: "health drift watcher FAILED", Priority: "4", Tags: "rotating_light" }, body: msg }).catch(() => {});
+          await pushAll(env, "Drift watcher FAILED", msg).catch(() => {});
+          await env.DB.prepare(`CREATE TABLE IF NOT EXISTS drift_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, verdict TEXT NOT NULL, fired INTEGER NOT NULL, report TEXT NOT NULL, pushed INTEGER NOT NULL)`).run().catch(() => {});
+          await env.DB.prepare(`INSERT INTO drift_log (at, verdict, fired, report, pushed) VALUES (?1, 'error', -1, ?2, 0)`).bind(Date.now(), JSON.stringify({ error: msg })).run().catch(() => {});
         }
       })(),
     );
