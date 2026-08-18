@@ -148,11 +148,14 @@ export default {
     if (path === "/api/test-push" && method === "POST") {
       const denied = requireAdmin(req, env);
       if (denied) return denied;
-      const body = (await req.json().catch(() => ({}))) as { title?: string; body?: string };
+      const body = (await req.json().catch(() => ({}))) as { title?: string; body?: string; url?: string };
+      // url: where a tap on the notification lands. Default "/" (this app's Oura page); fleet callers pass their own
+      // surface (rob-board) so a "Workers errors" page never opens HRV data (Rob 2026-08-18).
       const delivered = await pushAll(
         env,
         body.title ?? "pulse-health",
         body.body ?? `Test push — ${new Date().toLocaleString()}`,
+        typeof body.url === "string" && /^https:\/\/[a-z0-9.-]+\.robert-chuvala\.workers\.dev\//.test(body.url) ? body.url : "/",
       );
       return json({ delivered });
     }
