@@ -21,7 +21,7 @@ What to do when something rings the wrong bell.
    - `0` — exception inside the Worker. Check Workers logs.
 3. Check Workers logs in real-time:
    ```bash
-   wrangler tail health
+   bunx wrangler tail health
    ```
 
 ## "Pushes are going to the wrong place"
@@ -31,23 +31,23 @@ This was the original Signal-cli bug — `signal_send.py` sent to a contact thre
 To see every active subscription:
 
 ```bash
-wrangler d1 execute pulse-health-db --remote \
+bunx wrangler d1 execute pulse-health-db --remote \
   --command "SELECT id, user_agent, created_at FROM subscriptions WHERE active = 1"
 ```
 
 To kill one:
 
 ```bash
-wrangler d1 execute pulse-health-db --remote \
+bunx wrangler d1 execute pulse-health-db --remote \
   --command "UPDATE subscriptions SET active = 0 WHERE id = ?"
 ```
 
 ## "Worker is returning 500s"
 
 ```bash
-wrangler tail health           # live logs
-wrangler deployments list      # what's deployed
-wrangler rollback              # back out the last deploy
+bunx wrangler tail health           # live logs
+bunx wrangler deployments list      # what's deployed
+bunx wrangler rollback              # back out the last deploy
 ```
 
 ## "D1 is full"
@@ -55,14 +55,14 @@ wrangler rollback              # back out the last deploy
 Free tier ceiling is 100 MB. Paid tier is 10 GB per database.
 
 ```bash
-wrangler d1 info pulse-health-db
+bunx wrangler d1 info pulse-health-db
 ```
 
 If `readings` is the dominant table (Step 2+), partition cold data to R2:
 
 ```bash
 # export everything older than 90 days
-wrangler d1 execute pulse-health-db --remote \
+bunx wrangler d1 execute pulse-health-db --remote \
   --command "SELECT * FROM readings WHERE recorded_at < strftime('%s', 'now', '-90 days') * 1000" \
   --json > cold.json
 # upload to R2 (separate bucket setup)
@@ -82,8 +82,8 @@ See `docs/vapid.md` → Rotation procedure. Every device has to re-subscribe.
 ```bash
 ADMIN=$(openssl rand -hex 32)
 echo "$ADMIN" >> ~/1password-pending.txt  # then move to 1Password
-echo -n "$ADMIN" | wrangler secret put ADMIN_TOKEN
-wrangler deploy
+echo -n "$ADMIN" | bunx wrangler secret put ADMIN_TOKEN
+bunx wrangler deploy
 ```
 
 Old tokens stop working immediately on next request — Worker reads secrets at request time.
