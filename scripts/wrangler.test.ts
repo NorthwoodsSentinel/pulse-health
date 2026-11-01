@@ -1,3 +1,7 @@
+// Codex (audit of d14537c) named the missing case classes: "no forged-package, symlink, race,
+// decoy-lock, `PATH`, or argv-fidelity case". Decoy-lock, PATH and argv fidelity are tested below.
+// Forged-package, symlink and race are the accepted same-user limitations stated in wrangler.ts,
+// so they are deliberately not tested.
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
