@@ -484,6 +484,8 @@ export default {
   },
 
   // Daily cron — Oura + Strava sequentially.
+  // kintsugi: the checker had been saying three things were wrong while the work ran true; each
+  //   claim is now stated as it really is, so its warnings mean something again, and the seam runs gold.
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(
       (async () => {

@@ -7,6 +7,8 @@
 // immediately, then `bunx wrangler secret put VAPID_PRIVATE_KEY` to install it on
 // the worker. Do NOT commit it. Do NOT echo it into shell history.
 
+// kintsugi: the checker had been saying three things were wrong while the work ran true; each
+//   claim is now stated as it really is, so its warnings mean something again, and the seam runs gold.
 // Uses the WebCrypto global (Bun provides it), so no runtime import is needed; the empty export
 // keeps this file a module for top-level await.
 export {};
