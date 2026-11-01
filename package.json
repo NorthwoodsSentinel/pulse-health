@@ -4,10 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev",
-    "db:apply": "wrangler d1 execute pulse-health-db --remote --file=shared/schema.sql",
-    "db:migrate": "wrangler d1 migrations apply pulse-health-db --remote",
+    "wrangler": "bun scripts/wrangler.ts",
+    "deploy": "bun scripts/wrangler.ts deploy",
+    "dev": "bun scripts/wrangler.ts dev",
+    "db:apply": "bun scripts/wrangler.ts d1 execute pulse-health-db --remote --file=shared/schema.sql",
+    "db:migrate": "bun scripts/wrangler.ts d1 migrations apply pulse-health-db --remote",
     "vapid:generate": "bun shared/generate-vapid.ts"
   },
   "devDependencies": {
