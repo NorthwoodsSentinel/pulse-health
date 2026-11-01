@@ -484,7 +484,7 @@ export default {
   },
 
   // Daily cron — Oura + Strava sequentially.
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(
       (async () => {
         // ----- Oura -----

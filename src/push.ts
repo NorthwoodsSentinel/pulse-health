@@ -18,9 +18,15 @@ interface PushResult {
   error?: string;
 }
 
+// Byte arrays here are always freshly allocated, so they are ArrayBuffer-backed, which is what
+// WebCrypto accepts (TypeScript 5.7+ otherwise allows SharedArrayBuffer).
+// kintsugi: the checker had been saying three things were wrong while the work ran true; each
+//   claim is now stated as it really is, so its warnings mean something again, and the seam runs gold.
+type Bytes = Uint8Array<ArrayBuffer>;
+
 // ---------- base64url helpers ----------
 
-function b64urlDecode(s: string): Uint8Array {
+function b64urlDecode(s: string): Bytes {
   const pad = "=".repeat((4 - (s.length % 4)) % 4);
   const b64 = (s + pad).replaceAll("-", "+").replaceAll("_", "/");
   const bin = atob(b64);
@@ -29,14 +35,14 @@ function b64urlDecode(s: string): Uint8Array {
   return out;
 }
 
-function b64urlEncode(buf: ArrayBuffer | Uint8Array): string {
+function b64urlEncode(buf: ArrayBuffer | Bytes): string {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
   return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
-function concat(...arrays: Uint8Array[]): Uint8Array {
+function concat(...arrays: Bytes[]): Bytes {
   const total = arrays.reduce((n, a) => n + a.length, 0);
   const out = new Uint8Array(total);
   let off = 0;
@@ -87,11 +93,11 @@ async function vapidJwt(endpoint: string, keys: VapidKeys): Promise<string> {
 // ---------- HKDF ----------
 
 async function hkdf(
-  salt: Uint8Array,
-  ikm: Uint8Array,
-  info: Uint8Array,
+  salt: Bytes,
+  ikm: Bytes,
+  info: Bytes,
   length: number,
-): Promise<Uint8Array> {
+): Promise<Bytes> {
   const key = await crypto.subtle.importKey("raw", ikm, { name: "HKDF" }, false, [
     "deriveBits",
   ]);
@@ -106,10 +112,10 @@ async function hkdf(
 // ---------- aes128gcm encryption per RFC 8291 ----------
 
 async function encryptPayload(
-  plaintext: Uint8Array,
-  ua_public: Uint8Array,    // recipient p256dh, uncompressed (65 bytes)
-  auth_secret: Uint8Array,  // recipient auth secret (16 bytes)
-): Promise<{ body: Uint8Array; salt: Uint8Array; localPublic: Uint8Array }> {
+  plaintext: Bytes,
+  ua_public: Bytes,    // recipient p256dh, uncompressed (65 bytes)
+  auth_secret: Bytes,  // recipient auth secret (16 bytes)
+): Promise<{ body: Bytes; salt: Bytes; localPublic: Bytes }> {
   // Ephemeral local ECDH keypair.
   const local = await crypto.subtle.generateKey(
     { name: "ECDH", namedCurve: "P-256" },
