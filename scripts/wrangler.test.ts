@@ -65,6 +65,62 @@ test("refuses when bun.lock does not pin wrangler", () => {
   if (!r.ok) expect(r.reason).toContain("does not pin");
 });
 
+test("a decoy wrangler entry elsewhere in the lock cannot stand in for the real one", () => {
+  const decoy = `    "wrangler": ["wrangler@9.9.9", "", {}, "sha512-decoy"],\n`;
+  const lock = `{\n  "decoy": {\n${decoy}  },\n  "packages": {\n${LOCK_LINE}  }\n}\n`;
+  expect(lockedVersion(lock)).toBe("4.156.0");
+  const root = project({ lock, installed: "9.9.9" });
+  const r = check(root);
+  expect(r.ok).toBe(false);
+  if (!r.ok) expect(r.reason).toContain("9.9.9 is not the locked 4.156.0");
+});
+
+test("reads bun.lock as JSONC, with trailing commas", () => {
+  expect(lockedVersion(`{\n  "packages": {\n${LOCK_LINE}  },\n}\n`)).toBe("4.156.0");
+});
+
+test("refuses a malformed lock, an aliased entry, or a non-release version", () => {
+  expect(lockedVersion(`{ "packages": { "wrangler": ["wrangler@4.156.0"`)).toBeNull();
+  expect(lockedVersion(`{ "packages": { "wrangler": ["other@4.156.0"] } }`)).toBeNull();
+  // Same length prefix as "wrangler@", so only the name check can reject it.
+  expect(lockedVersion(`{ "packages": { "wrangler": ["wrangler-4.156.0"] } }`)).toBeNull();
+  expect(lockedVersion(`{ "packages": { "wrangler": ["wrangler@latest"] } }`)).toBeNull();
+  expect(lockedVersion(`{ "packages": { "wrangler": "wrangler@4.156.0" } }`)).toBeNull();
+});
+
+// A project whose "Wrangler" just reports the argv it received, to test the hand-off itself.
+async function echoProject(): Promise<string> {
+  const root = project();
+  writeFileSync(join(root, "node_modules", "wrangler", "bin", "wrangler.js"), "console.log(JSON.stringify(process.argv.slice(2)));\n");
+  mkdirSync(join(root, "scripts"));
+  writeFileSync(join(root, "scripts", "wrangler.ts"), await Bun.file(join(import.meta.dir, "wrangler.ts")).text());
+  return root;
+}
+
+test("end to end: passes every argument through byte for byte, with no shell", async () => {
+  const root = await echoProject();
+  const args = ["secret put", `it's "quoted"`, "$HOME", "`id`", "a\\b", "", "--", "; rm -rf x", "ünï"];
+  const proc = Bun.spawn(["bun", join(root, "scripts", "wrangler.ts"), ...args], { stdout: "pipe", stderr: "pipe" });
+  const out = await new Response(proc.stdout).text();
+  expect(await proc.exited).toBe(0);
+  expect(JSON.parse(out)).toEqual(args);
+});
+
+test("end to end: runs under this Bun, not a node found on PATH", async () => {
+  const root = await echoProject();
+  const fakeBin = join(root, "fake-bin");
+  mkdirSync(fakeBin);
+  writeFileSync(join(fakeBin, "node"), "#!/bin/sh\necho poisoned node >&2\nexit 99\n", { mode: 0o755 });
+  const proc = Bun.spawn([process.execPath, join(root, "scripts", "wrangler.ts"), "ok"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+  });
+  const out = await new Response(proc.stdout).text();
+  expect(await proc.exited).toBe(0);
+  expect(JSON.parse(out)).toEqual(["ok"]);
+});
+
 test("end to end: refuses with exit 1 when nothing is installed", async () => {
   const root = project({ installed: null });
   mkdirSync(join(root, "scripts"));
