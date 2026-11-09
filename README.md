@@ -28,12 +28,12 @@ Full deploy walkthrough: **[docs/SETUP.md](docs/SETUP.md)**.
 Short version:
 
 1. Clone this repo.
-2. Have a Cloudflare account and install `bun`; `bun install` brings the pinned Wrangler (run it as `bunx wrangler`).
+2. Have a Cloudflare account and install `bun`; `bun install --frozen-lockfile` brings the pinned Wrangler (run it as `bun scripts/wrangler.ts`).
 3. Create the D1 database and apply the schema.
 4. Generate VAPID keys (one script).
 5. Register OAuth apps with Oura and Strava (their developer portals — links in SETUP.md).
-6. Install secrets via `bunx wrangler secret put`.
-7. `bunx wrangler deploy`.
+6. Install secrets via `bun scripts/wrangler.ts secret put`.
+7. `bun scripts/wrangler.ts deploy`.
 8. Open the deployed URL on your phone, install the PWA, subscribe.
 9. Visit `/api/oura/connect` and `/api/strava/connect` on the phone to authorize each upstream.
 

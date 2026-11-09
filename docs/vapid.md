@@ -27,7 +27,7 @@ Output prints once. Two keys:
 
 1. The generator script prints both keys to stdout and does not write to disk.
 2. Immediately copy the **private key** into 1Password under label `pulse-health VAPID private`. Include the public key as a note for reference.
-3. Install both into the Worker via `bunx wrangler secret put`.
+3. Install both into the Worker via `bun scripts/wrangler.ts secret put`.
 4. Clear terminal scrollback (`clear; history -c`) on the host where you ran the generator.
 5. Do not paste the private key into any chat, log, or doc.
 

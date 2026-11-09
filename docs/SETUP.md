@@ -8,7 +8,7 @@ This walkthrough takes you from zero to a deployed Worker with a working push ch
 - **A GitHub account** (to clone this repo).
 - **A machine with these installed:**
   - [Bun](https://bun.sh) ≥ 1.3 — the JavaScript runtime + package manager.
-  - Nothing else: [Wrangler](https://developers.cloudflare.com/workers/wrangler/install-and-update/) (Cloudflare's CLI) comes pinned with `bun install`; every command below runs it with `bunx wrangler`, so a different global install is never used.
+  - Nothing else: [Wrangler](https://developers.cloudflare.com/workers/wrangler/install-and-update/) (Cloudflare's CLI) comes pinned with `bun install`; every command below runs it with `bun scripts/wrangler.ts`, so a different global install is never used.
 <!-- kintsugi: the tools on the bench had gone soft at the edges while the work itself stayed sound;
        now the bench is sharpened too, and the guide hands you the sharpened one. -->
 - **An Android phone** (Pixel, Samsung, etc.) for the PWA dashboard. iOS works for installed PWAs since iOS 16.4, but Web Push requires home-screen add first.
@@ -30,7 +30,7 @@ Wrangler needs your Cloudflare credentials. Two options:
 
 **Option A: Browser login (easiest).**
 ```bash
-bunx wrangler login
+bun scripts/wrangler.ts login
 ```
 This opens a browser tab; click through. Token is stored locally.
 
@@ -46,13 +46,13 @@ This opens a browser tab; click through. Token is stored locally.
 
 Verify:
 ```bash
-bunx wrangler whoami
+bun scripts/wrangler.ts whoami
 ```
 
 ## 3. Create the D1 database
 
 ```bash
-bunx wrangler d1 create pulse-health-db
+bun scripts/wrangler.ts d1 create pulse-health-db
 ```
 
 Output includes a `database_id`. Copy it.
@@ -69,7 +69,7 @@ database_id = "PASTE-THE-UUID-HERE"
 Apply the schema:
 
 ```bash
-bunx wrangler d1 execute pulse-health-db --remote --file=shared/schema.sql
+bun scripts/wrangler.ts d1 execute pulse-health-db --remote --file=shared/schema.sql
 ```
 
 You should see six tables created: `subscriptions`, `push_log`, `readings`, `tokens`, `ingest_log`, `oauth_pending`.
@@ -87,9 +87,9 @@ Output: a public key and a private key. **Immediately:**
 1. Copy the **private key** into a password manager (1Password, Bitwarden, etc.) with the label `pulse-health VAPID private`.
 2. Install both into the Worker:
    ```bash
-   echo -n '<public key>'  | bunx wrangler secret put VAPID_PUBLIC_KEY
-   echo -n '<private key>' | bunx wrangler secret put VAPID_PRIVATE_KEY
-   echo -n 'mailto:your-email@example.com' | bunx wrangler secret put VAPID_SUBJECT
+   echo -n '<public key>'  | bun scripts/wrangler.ts secret put VAPID_PUBLIC_KEY
+   echo -n '<private key>' | bun scripts/wrangler.ts secret put VAPID_PRIVATE_KEY
+   echo -n 'mailto:your-email@example.com' | bun scripts/wrangler.ts secret put VAPID_SUBJECT
    ```
 3. Clear your terminal scrollback once the secrets are uploaded.
 
@@ -102,7 +102,7 @@ The admin token gates the `/api/test-push`, `/api/subscriptions`, `/api/oura/syn
 ```bash
 ADMIN=$(openssl rand -hex 32)
 echo "Admin token: $ADMIN  (save to 1Password now)"
-echo -n "$ADMIN" | bunx wrangler secret put ADMIN_TOKEN
+echo -n "$ADMIN" | bun scripts/wrangler.ts secret put ADMIN_TOKEN
 ```
 
 Save the token to your password manager before clearing scrollback.
@@ -122,8 +122,8 @@ Save the token to your password manager before clearing scrollback.
 5. Copy the Client ID and Client Secret.
 6. Install:
    ```bash
-   echo -n '<client id>'     | bunx wrangler secret put OURA_CLIENT_ID
-   echo -n '<client secret>' | bunx wrangler secret put OURA_CLIENT_SECRET
+   echo -n '<client id>'     | bun scripts/wrangler.ts secret put OURA_CLIENT_ID
+   echo -n '<client secret>' | bun scripts/wrangler.ts secret put OURA_CLIENT_SECRET
    ```
 
 ### Strava
@@ -135,8 +135,8 @@ Save the token to your password manager before clearing scrollback.
 4. Copy the Client ID. Reveal and copy the Client Secret.
 5. Install:
    ```bash
-   echo -n '<client id>'     | bunx wrangler secret put STRAVA_CLIENT_ID
-   echo -n '<client secret>' | bunx wrangler secret put STRAVA_CLIENT_SECRET
+   echo -n '<client id>'     | bun scripts/wrangler.ts secret put STRAVA_CLIENT_ID
+   echo -n '<client secret>' | bun scripts/wrangler.ts secret put STRAVA_CLIENT_SECRET
    ```
 
 Note: Strava is rolling out paid-subscription gating for API access (effective June 30, 2026 for existing developers). If you plan ongoing use, factor in a Strava subscription.
@@ -144,7 +144,7 @@ Note: Strava is rolling out paid-subscription gating for API access (effective J
 ## 7. Deploy
 
 ```bash
-bunx wrangler deploy
+bun scripts/wrangler.ts deploy
 ```
 
 Wrangler reports the live URL — something like `https://<your-worker>.workers.dev`. Note it down.
@@ -210,7 +210,7 @@ The Worker has a cron trigger at `0 13 * * *` UTC (08:00 Central). Every morning
 Watch the first morning to confirm it fires. If it doesn't push, check `ingest_log` in D1:
 
 ```bash
-bunx wrangler d1 execute pulse-health-db --remote \
+bun scripts/wrangler.ts d1 execute pulse-health-db --remote \
   --command "SELECT datetime(started_at/1000,'unixepoch') AS ts, source, status, rows_added, error
              FROM ingest_log ORDER BY started_at DESC LIMIT 5"
 ```

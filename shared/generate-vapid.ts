@@ -4,7 +4,7 @@
 // matching the format the worker and Web Push subscribe() expect.
 //
 // IMPORTANT: the private key prints once. Store it in 1Password (or equivalent)
-// immediately, then `bunx wrangler secret put VAPID_PRIVATE_KEY` to install it on
+// immediately, then `bun scripts/wrangler.ts secret put VAPID_PRIVATE_KEY` to install it on
 // the worker. Do NOT commit it. Do NOT echo it into shell history.
 
 import { webcrypto } from "node:crypto";
@@ -35,11 +35,11 @@ console.log("");
 console.log("VAPID_PUBLIC_KEY  (safe to embed in PWA, safe to commit):");
 console.log("  " + publicB64);
 console.log("");
-console.log("VAPID_PRIVATE_KEY (Worker secret — store offline NOW, install via bunx wrangler):");
+console.log("VAPID_PRIVATE_KEY (Worker secret — store offline NOW, install via bun scripts/wrangler.ts):");
 console.log("  " + privateB64);
 console.log("");
 console.log("Next steps:");
 console.log("  1. Copy the private key to 1Password (label: 'pulse-health VAPID private')");
-console.log("  2. echo -n '<private key>' | bunx wrangler secret put VAPID_PRIVATE_KEY");
-console.log("  3. echo -n '<public key>'  | bunx wrangler secret put VAPID_PUBLIC_KEY");
+console.log("  2. echo -n '<private key>' | bun scripts/wrangler.ts secret put VAPID_PRIVATE_KEY");
+console.log("  3. echo -n '<public key>'  | bun scripts/wrangler.ts secret put VAPID_PUBLIC_KEY");
 console.log("  4. Clear your terminal scrollback");
