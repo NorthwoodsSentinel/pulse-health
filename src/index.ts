@@ -20,6 +20,10 @@ import * as oura from "./oura";
 import * as strava from "./strava";
 import * as drift from "./drift";
 
+// How far back the daily cron re-reads Oura. The ring holds about a week unsynced;
+// 14 days leaves margin for a late app-open. Was 2 until 2026-11-12 (NOR-289).
+const OURA_CRON_LOOKBACK_DAYS = 14;
+
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
@@ -505,7 +509,11 @@ export default {
               errorMsg = "no oura token";
             } else {
               const end = new Date();
-              const start = new Date(end.getTime() - 2 * 24 * 3600 * 1000);
+              // kintsugi: nights were lost when the ring synced later than the window
+              // (2026-11-12, NOR-289). Oura only uploads when the phone app is opened, so a
+              // night can arrive days late. Inserts are ON CONFLICT DO NOTHING, so re-reading
+              // a wider window adds missing rows and never rewrites existing ones.
+              const start = new Date(end.getTime() - OURA_CRON_LOOKBACK_DAYS * 24 * 3600 * 1000);
               const result = await oura.ingestRange(env.DB, access, start, end);
               rowsAdded = result.rowsAdded;
               kindsList = result.kinds.join(",");
