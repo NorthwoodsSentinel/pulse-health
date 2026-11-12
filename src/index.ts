@@ -419,13 +419,14 @@ export default {
     // -------- Aggregated digest for the dashboard --------
     if (path === "/api/digest" && method === "GET") {
       // Latest daily_sleep + daily_readiness + daily_stress for today (and yesterday fallback).
-      const ouraRow = await env.DB.prepare(
-        `SELECT kind, payload, recorded_at FROM readings
-         WHERE source = 'oura'
-           AND kind IN ('daily_sleep','daily_readiness','daily_stress','sleep')
-         ORDER BY recorded_at DESC
-         LIMIT 12`,
-      ).all<{ kind: string; payload: string; recorded_at: number }>();
+      // kintsugi: this used to take the 12 newest rows across all four kinds and then pick
+      // one per kind, so a kind lagging by four days dropped out silently (Codex audit of
+      // 24e91c9, 2026-11-12). It now selects the newest row of each kind.
+      const ouraRow = await env.DB.prepare(oura.OURA_DIGEST_SQL).all<{
+        kind: string;
+        payload: string;
+        recorded_at: number;
+      }>();
 
       const byKind: Record<string, { payload: any; recorded_at: number }> = {};
       for (const r of ouraRow.results ?? []) {

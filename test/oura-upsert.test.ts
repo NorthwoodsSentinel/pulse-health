@@ -14,7 +14,7 @@ import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { OURA_UPSERT_SQL, hasValidDay } from "../src/oura";
+import { OURA_DIGEST_SQL, OURA_UPSERT_SQL, hasValidDay } from "../src/oura";
 
 const SCHEMA = readFileSync(join(import.meta.dir, "..", "shared", "schema.sql"), "utf8");
 const T = 1700000000000;
@@ -431,6 +431,41 @@ describe("OURA_UPSERT_SQL (Codex adversarial cases, NOR-289)", () => {
       db.close();
     });
   }
+});
+
+// Regression for the Codex audit finding on 24e91c9: the digest selected the 12 newest
+// rows across four kinds, so a kind lagging by four days was omitted. The scenario is the
+// one the reviewer reproduced (one stress row, then four later days of the other kinds);
+// the assertions are the author's.
+describe("OURA_DIGEST_SQL returns the newest row of each kind", () => {
+  test("a stress row older than twelve other rows is still returned", () => {
+    const db = freshDb();
+    const up = db.prepare(OURA_UPSERT_SQL);
+    const DAY = 86400000;
+    up.run("daily_stress", T, 1, JSON.stringify({ day: "2023-11-14", stress_high: 3600, recovery_high: 60 }));
+    for (let d = 1; d <= 4; d++) {
+      for (const kind of ["daily_sleep", "daily_readiness", "sleep"]) {
+        up.run(kind, T + d * DAY, 1, JSON.stringify({ id: `${kind}-${d}`, type: "long_sleep", total_sleep_duration: 25000 }));
+      }
+    }
+    const rows = db.query(OURA_DIGEST_SQL).all() as { kind: string; payload: string; recorded_at: number }[];
+    const byKind = Object.fromEntries(rows.map((r) => [r.kind, r]));
+    expect(rows.length).toBe(4);
+    expect(JSON.parse(byKind["daily_stress"].payload).stress_high).toBe(3600);
+    expect(byKind["daily_stress"].recorded_at).toBe(T);
+    for (const kind of ["daily_sleep", "daily_readiness", "sleep"]) {
+      expect(byKind[kind].recorded_at).toBe(T + 4 * DAY);
+    }
+    db.close();
+  });
+
+  test("a kind with no rows is simply absent", () => {
+    const db = freshDb();
+    db.prepare(OURA_UPSERT_SQL).run("sleep", T, 1, JSON.stringify({ id: "n", type: "long_sleep", total_sleep_duration: 1 }));
+    const rows = db.query(OURA_DIGEST_SQL).all() as { kind: string }[];
+    expect(rows.map((r) => r.kind)).toEqual(["sleep"]);
+    db.close();
+  });
 });
 
 describe("hasValidDay (Codex cases, NOR-289)", () => {

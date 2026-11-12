@@ -280,6 +280,14 @@ WHERE (CASE
   ELSE 0
 END) = 1`;
 
+// The digest's Oura rows: exactly the newest stored row of each of the four kinds it shows.
+export const OURA_DIGEST_SQL = `SELECT r.kind, r.payload, r.recorded_at FROM readings r
+WHERE r.source = 'oura'
+  AND r.kind IN ('daily_sleep', 'daily_readiness', 'daily_stress', 'sleep')
+  AND r.recorded_at = (
+    SELECT MAX(recorded_at) FROM readings WHERE source = 'oura' AND kind = r.kind
+  )`;
+
 // A `daily_stress` item must carry a real calendar day, or recordedAtFromItem would fall
 // back to "now", store it beside the real row for the day, and make it the newest reading.
 export function hasValidDay(item: unknown): boolean {
