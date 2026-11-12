@@ -266,6 +266,27 @@ const CASES: Array<{ n: number; name: string; fixture: Fixture; checks: Checks }
   },
 ];
 
+// Regressions for the Codex audit of 9f20451: the staleness decision used an age rounded
+// to one decimal. The two boundary ages are the reviewer's; the assertions are the author's.
+describe("staleness is decided on the exact age (audit regression)", () => {
+  test("30.04 hours is stale day 1 and alerts", async () => {
+    const r = await runScheduled({ ouraNewRows: false, lastOuraReadingAgeHours: 30.04, oura: "ok", ntfy: "ok" });
+    expect(r.ntfy.filter((n) => n.title === "health: oura has no new data (day 1)").length).toBe(1);
+    expect(r.threw).toBe(false);
+  });
+
+  test("197.96 hours is still stale day 7 and stays quiet", async () => {
+    const r = await runScheduled({ ouraNewRows: false, lastOuraReadingAgeHours: 197.96, oura: "ok", ntfy: "ok" });
+    expect(r.ntfy.some((n) => n.title.includes("oura has no new data"))).toBe(false);
+    expect(r.threw).toBe(false);
+  });
+
+  test("exactly 30 hours is not stale", async () => {
+    const r = await runScheduled({ ouraNewRows: false, lastOuraReadingAgeHours: 30, oura: "ok", ntfy: "ok" });
+    expect(r.ntfy.some((n) => n.title.includes("oura has no new data"))).toBe(false);
+  });
+});
+
 describe("scheduled handler (Codex cases 27-50, NOR-289)", () => {
   for (const c of CASES) {
     test(`${c.n}. ${c.name}`, async () => {

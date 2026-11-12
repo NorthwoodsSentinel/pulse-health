@@ -635,9 +635,14 @@ export default {
           if (status === "success") {
             try {
               const fresh = await oura.feedFreshness(env.DB);
-              const stale = alerts.staleAlertDue(fresh.ingest_age_hours, oura.STALE_INGEST_HOURS);
-              if (stale.due && "staleDay" in stale && fresh.ingest_age_hours !== null) {
-                await deliverAlert(env, alerts.staleMessage(stale.staleDay, fresh.ingest_age_hours));
+              // Decide on the exact age. feedFreshness rounds ingest_age_hours to one decimal
+              // for display; deciding on that turned 30.04h into "not stale", and the next
+              // run into the quiet day 2, so day 1 was never said (Codex audit of 9f20451).
+              const ageHours =
+                fresh.last_received_at === null ? null : (Date.now() - fresh.last_received_at) / 3_600_000;
+              const stale = alerts.staleAlertDue(ageHours, oura.STALE_INGEST_HOURS);
+              if (stale.due && "staleDay" in stale && ageHours !== null) {
+                await deliverAlert(env, alerts.staleMessage(stale.staleDay, ageHours));
               }
             } catch (e) {
               console.error("oura staleness check failed", (e as Error).message);
