@@ -243,13 +243,25 @@ const sleepRank = (p: string) => `(CASE
          + MIN(MAX(COALESCE(CAST(json_extract(${p}, '$.total_sleep_duration') AS INTEGER), 0), 0), 999999999)
   END)`;
 
+// kintsugi: the day's stress row was a frozen morning snapshot (2026-11-12, NOR-289).
+// Oura's `daily_stress` document for a day accumulates through the day. The cron first
+// sees today's at 13:00 UTC, usually 0/0, and first-write-wins kept that forever. There is
+// one such document per day, so the key already names it: a differing version now
+// replaces the stored one, but only if it carries at least as many numeric measurements
+// (stress_high, recovery_high as JSON numbers). Text, booleans, arrays, objects and nulls
+// are not measurements, so a partial or junk version cannot displace a real reading.
+// Downward numeric revisions are accepted: the figure is Oura's.
+const stressNums = (p: string) => `(
+    (CASE WHEN json_type(${p}, '$.stress_high') IN ('integer', 'real') THEN 1 ELSE 0 END)
+  + (CASE WHEN json_type(${p}, '$.recovery_high') IN ('integer', 'real') THEN 1 ELSE 0 END))`;
+
 export const OURA_UPSERT_SQL = `INSERT INTO readings (source, kind, recorded_at, received_at, payload)
 VALUES ('oura', ?1, ?2, ?3, ?4)
 ON CONFLICT(source, kind, recorded_at) DO UPDATE SET
   payload = excluded.payload,
   received_at = excluded.received_at
-WHERE readings.kind = 'sleep'
-  AND (CASE
+WHERE (CASE
+  WHEN readings.kind = 'sleep' THEN (CASE
     WHEN NOT json_valid(excluded.payload) THEN 0
     WHEN ${sleepRank("excluded.payload")} > ${sleepRank("readings.payload")} THEN 1
     WHEN NOT json_valid(readings.payload) THEN 0
@@ -257,7 +269,26 @@ WHERE readings.kind = 'sleep'
      AND json_extract(excluded.payload, '$.id') = json_extract(readings.payload, '$.id')
      AND excluded.payload <> readings.payload THEN 1
     ELSE 0
-  END) = 1`;
+  END)
+  WHEN readings.kind = 'daily_stress' THEN (CASE
+    WHEN NOT json_valid(excluded.payload) THEN 0
+    WHEN NOT json_valid(readings.payload) THEN 1
+    WHEN excluded.payload = readings.payload THEN 0
+    WHEN ${stressNums("excluded.payload")} >= ${stressNums("readings.payload")} THEN 1
+    ELSE 0
+  END)
+  ELSE 0
+END) = 1`;
+
+// A `daily_stress` item must carry a real calendar day, or recordedAtFromItem would fall
+// back to "now", store it beside the real row for the day, and make it the newest reading.
+export function hasValidDay(item: unknown): boolean {
+  if (typeof item !== "object" || item === null) return false;
+  const day = (item as { day?: unknown }).day;
+  if (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+  const t = new Date(`${day}T00:00:00Z`);
+  return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === day;
+}
 
 function fmtDate(d: Date): string {
   return d.toISOString().slice(0, 10); // YYYY-MM-DD
@@ -318,12 +349,20 @@ export async function ingestRange(
   for (const kind of FETCHED_KINDS) {
     try {
       const params: Record<string, string> = { start_date: start, end_date: end };
-      const items = await fetchPaged(`/${kind}`, token, params);
-      result.rowsSeen += items.length;
+      const fetched = await fetchPaged(`/${kind}`, token, params);
+      result.rowsSeen += fetched.length;
+      // daily_stress only: never store an item without a real calendar day (see hasValidDay).
+      const items = kind === "daily_stress" ? fetched.filter(hasValidDay) : fetched;
+      if (items.length < fetched.length) {
+        result.errors.push(
+          `${kind}: ${fetched.length - items.length} item(s) without a valid day were skipped`,
+        );
+      }
       if (items.length === 0) continue;
       result.kinds.push(kind);
 
-      // Batch upsert: every kind except `sleep` keeps first-write-wins; see OURA_UPSERT_SQL.
+      // Batch upsert: `sleep` and `daily_stress` can be replaced by a better or newer
+      // version; every other kind keeps first-write-wins. See OURA_UPSERT_SQL.
       const stmt = db.prepare(OURA_UPSERT_SQL);
       const batch = items.map((item) =>
         stmt.bind(kind, recordedAtFromItem(kind, item), now, JSON.stringify(item)),

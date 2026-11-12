@@ -458,6 +458,9 @@ export default {
           temperature_deviation: dr?.temperature_deviation ?? null,
           stress_high_seconds: stress?.stress_high ?? null,
           recovery_high_seconds: stress?.recovery_high ?? null,
+          // kintsugi: the day the stress figures belong to; `day` above comes from sleep
+          // or readiness and can differ (2026-11-12, NOR-289).
+          stress_day: stress?.day ?? null,
           avg_hrv: sleep?.average_hrv ?? null,
           avg_hr: sleep?.average_heart_rate ?? null,
           time_in_bed_seconds: sleep?.time_in_bed ?? null,
