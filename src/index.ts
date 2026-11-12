@@ -568,6 +568,12 @@ export default {
 
   // Daily cron — Oura + Strava sequentially.
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    // The cron's scheduled instant, identical to the millisecond from one day to the next,
+    // unlike the wall clock when the handler happens to start. Staleness is aged from it.
+    const scheduledAt =
+      typeof _event?.scheduledTime === "number" && Number.isFinite(_event.scheduledTime)
+        ? _event.scheduledTime
+        : Date.now();
     ctx.waitUntil(
       (async () => {
         // ----- Oura -----
@@ -639,7 +645,7 @@ export default {
               // for display; deciding on that turned 30.04h into "not stale", and the next
               // run into the quiet day 2, so day 1 was never said (Codex audit of 9f20451).
               const ageHours =
-                fresh.last_received_at === null ? null : (Date.now() - fresh.last_received_at) / 3_600_000;
+                fresh.last_received_at === null ? null : (scheduledAt - fresh.last_received_at) / 3_600_000;
               const stale = alerts.staleAlertDue(ageHours, oura.STALE_INGEST_HOURS);
               if (stale.due && "staleDay" in stale && ageHours !== null) {
                 await deliverAlert(env, alerts.staleMessage(stale.staleDay, ageHours));

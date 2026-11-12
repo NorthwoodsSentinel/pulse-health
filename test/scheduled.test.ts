@@ -112,45 +112,9 @@ const CASES: Array<{ n: number; name: string; fixture: Fixture; checks: Checks }
     fixture: { priorIngestLog: [{ source: "oura", status: "partial", trigger: "cron" }], strava: "ok", ntfy: "ok" },
     checks: { ntfyNoTitleContains: ["strava pull recovered"] },
   },
-  {
-    n: 36,
-    name: "first stale day",
-    fixture: { ouraNewRows: false, lastOuraReadingAgeHours: 31, oura: "ok", ntfy: "ok" },
-    checks: {
-      logStatus: { oura: "success" },
-      ntfyHas: [{ title: "health: oura has no new data (day 1)", priority: "3" }],
-      ntfyTitleExactlyOnce: ["health: oura has no new data (day 1)"],
-      threw: false,
-      driftLogged: true,
-    },
-  },
-  {
-    n: 37,
-    name: "standing staleness does not page daily",
-    fixture: { ouraNewRows: false, lastOuraReadingAgeHours: 54, oura: "ok", ntfy: "ok" },
-    checks: { ntfyNoTitleEquals: ["health: oura has no new data (day 2)"], threw: false, driftLogged: true },
-  },
-  {
-    n: 38,
-    name: "stale day 8 repeats",
-    fixture: { ouraNewRows: false, lastOuraReadingAgeHours: 198, oura: "ok", ntfy: "ok" },
-    checks: {
-      ntfyHas: [{ title: "health: oura has no new data (day 8)", priority: "3" }],
-      ntfyTitleExactlyOnce: ["health: oura has no new data (day 8)"],
-    },
-  },
-  {
-    n: 39,
-    name: "failed Oura pull suppresses the stale alert",
-    fixture: { oura: "throw", ouraNewRows: false, lastOuraReadingAgeHours: 198, ntfy: "ok" },
-    checks: {
-      logStatus: { oura: "error" },
-      ntfyHas: [{ title: "health: oura pull error (day 1)", priority: "4" }],
-      ntfyNoTitleContains: ["oura has no new data"],
-      threw: false,
-      driftLogged: true,
-    },
-  },
+  // Cases 36, 37, 38 (staleness on the superseded floor formula) and 39 (whose age of 198h
+  // is day 7 under the corrected rule and so proved nothing) were re-issued by Codex as
+  // 36R-42R; see the describe block below the table.
   {
     n: 40,
     name: "missing Oura token is a real failure",
@@ -287,7 +251,92 @@ describe("staleness is decided on the exact age (audit regression)", () => {
   });
 });
 
-describe("scheduled handler (Codex cases 27-50, NOR-289)", () => {
+// Cases 36R-42R: written by Codex (fixed brief, MODE tests, 2026-11-12) to replace 36-39
+// after the stale-day rule changed to ceil((age - threshold) / 24) measured from the cron's
+// scheduled time. Fixtures and expectations are transcribed unchanged.
+describe("staleness cadence (Codex cases 36R-42R, replacing 36-39)", () => {
+  test("36R. first instant stale", async () => {
+    const r = await runScheduled({ ouraNewRows: false, lastOuraReadingAgeHours: 30.0001, oura: "ok", ntfy: "ok" });
+    expect(r.ingestLog).toContainEqual(expect.objectContaining({ source: "oura", status: "success", trigger: "cron" }));
+    expect(r.ntfy.filter((n) => n.title === "health: oura has no new data (day 1)")).toHaveLength(1);
+    expect(r.threw).toBe(false);
+    expect(r.driftLogged).toBe(true);
+  });
+
+  test("37R. first instant of stale day 2 is quiet", async () => {
+    const r = await runScheduled({ ouraNewRows: false, lastOuraReadingAgeHours: 54.0001, oura: "ok", ntfy: "ok" });
+    expect(r.ntfy.some((n) => n.title === "health: oura has no new data (day 2)")).toBe(false);
+    expect(r.ntfy.some((n) => n.title.includes("health: oura has no new data"))).toBe(false);
+    expect(r.threw).toBe(false);
+    expect(r.driftLogged).toBe(true);
+  });
+
+  test("38R. first instant of stale day 8 repeats", async () => {
+    const r = await runScheduled({ ouraNewRows: false, lastOuraReadingAgeHours: 198.0001, oura: "ok", ntfy: "ok" });
+    expect(r.ntfy.filter((n) => n.title === "health: oura has no new data (day 8)")).toHaveLength(1);
+    expect(r.threw).toBe(false);
+    expect(r.driftLogged).toBe(true);
+  });
+
+  test("39R-A/39R-B. transition from threshold to threshold plus 24 hours", async () => {
+    const atThreshold = await runScheduled({ ouraNewRows: false, lastOuraReadingAgeHours: 30, oura: "ok", ntfy: "ok" });
+    const oneDayLater = await runScheduled({ ouraNewRows: false, lastOuraReadingAgeHours: 54, oura: "ok", ntfy: "ok" });
+    expect(atThreshold.ntfy.some((n) => n.title.includes("health: oura has no new data"))).toBe(false);
+    expect(oneDayLater.ntfy.filter((n) => n.title === "health: oura has no new data (day 1)")).toHaveLength(1);
+    expect(atThreshold.threw).toBe(false);
+    expect(oneDayLater.threw).toBe(false);
+  });
+
+  test("40R. daily sweep through stale days 1-9", async () => {
+    const ages = [54, 78, 102, 126, 150, 174, 198, 222, 246];
+    const runs = [];
+    for (const age of ages) {
+      runs.push(await runScheduled({ ouraNewRows: false, lastOuraReadingAgeHours: age, oura: "ok", ntfy: "ok" }));
+    }
+    const expectedTitles = [
+      "health: oura has no new data (day 1)",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      "health: oura has no new data (day 8)",
+      null,
+    ];
+    for (let i = 0; i < runs.length; i++) {
+      const stale = runs[i].ntfy.filter((n) => n.title.includes("health: oura has no new data"));
+      if (expectedTitles[i] === null) {
+        expect(stale).toHaveLength(0);
+      } else {
+        expect(stale).toHaveLength(1);
+        expect(stale[0].title).toBe(expectedTitles[i]);
+      }
+      expect(runs[i].threw).toBe(false);
+      expect(runs[i].driftLogged).toBe(true);
+    }
+  });
+
+  test("41R. failed Oura pull suppresses a stale alert that would otherwise be due", async () => {
+    const r = await runScheduled({ oura: "throw", ouraNewRows: false, lastOuraReadingAgeHours: 222, ntfy: "ok" });
+    expect(r.ingestLog).toContainEqual(expect.objectContaining({ source: "oura", status: "error", trigger: "cron" }));
+    expect(r.ntfy.filter((n) => n.title === "health: oura pull error (day 1)")).toHaveLength(1);
+    expect(r.ntfy.some((n) => n.title.includes("health: oura has no new data"))).toBe(false);
+    expect(r.threw).toBe(false);
+    expect(r.driftLogged).toBe(true);
+  });
+
+  test("42R. partial Oura pull also suppresses otherwise-due staleness", async () => {
+    const r = await runScheduled({ oura: "partial", ouraNewRows: false, lastOuraReadingAgeHours: 222, ntfy: "ok" });
+    expect(r.ingestLog).toContainEqual(expect.objectContaining({ source: "oura", status: "partial", trigger: "cron" }));
+    expect(r.ntfy.filter((n) => n.title === "health: oura pull partial (day 1)")).toHaveLength(1);
+    expect(r.ntfy.some((n) => n.title.includes("health: oura has no new data"))).toBe(false);
+    expect(r.threw).toBe(false);
+    expect(r.driftLogged).toBe(true);
+  });
+});
+
+describe("scheduled handler (Codex cases 27-35 and 40-50, NOR-289)", () => {
   for (const c of CASES) {
     test(`${c.n}. ${c.name}`, async () => {
       const r = await runScheduled(c.fixture);

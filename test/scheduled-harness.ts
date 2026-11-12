@@ -195,7 +195,9 @@ export async function runScheduled(fx: Fixture = {}): Promise<RunResult> {
   let threw = false;
   const pending: Promise<unknown>[] = [];
   try {
-    await worker.scheduled({}, env, { waitUntil: (p) => void pending.push(p) });
+    await worker.scheduled({ scheduledTime: now, cron: "0 13 * * *" }, env, {
+      waitUntil: (p) => void pending.push(p),
+    });
     const settled = await Promise.allSettled(pending);
     threw = settled.some((s) => s.status === "rejected");
   } catch {

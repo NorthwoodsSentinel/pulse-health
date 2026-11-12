@@ -56,7 +56,12 @@ export function staleAlertDue(ageHours: number | null, thresholdHours: number): 
   if (ageHours === null || !Number.isFinite(ageHours) || ageHours <= thresholdHours) {
     return { due: false };
   }
-  const staleDay = Math.floor((ageHours - thresholdHours) / 24) + 1;
+  // Round UP: the first run past the threshold is always stale day 1. Rounding down made
+  // an age of exactly threshold + 24h "day 2", so when the previous run sat exactly on the
+  // threshold (not stale), day 1 was never announced (Codex audit of 118e475). Ages are
+  // measured from the cron's scheduled time, so consecutive runs are exactly 24h apart and
+  // the day number rises by exactly one per run.
+  const staleDay = Math.ceil((ageHours - thresholdHours) / 24);
   return { due: onCadence(staleDay), staleDay };
 }
 

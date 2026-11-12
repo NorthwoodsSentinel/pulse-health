@@ -37,19 +37,39 @@ describe("decideIngestAlert (Codex cases 1-9)", () => {
   }
 });
 
-describe("staleAlertDue (Codex cases 10-14)", () => {
-  const cases: [n: number, name: string, args: [number | null, number], expected: unknown][] = [
-    [10, "exact staleness threshold", [30, 30], { due: false }],
-    [11, "first instant beyond threshold", [30.0001, 30], { due: true, staleDay: 1 }],
-    [12, "stale day 2 is quiet", [54, 30], { due: false, staleDay: 2 }],
-    [13, "stale day 8 repeats", [198, 30], { due: true, staleDay: 8 }],
-    [14, "no reading ever", [null, 30], { due: false }],
+// Cases 10-14 encoded staleDay = floor((age - threshold) / 24) + 1, which the audit of
+// 118e475 showed skips day 1 across an exact daily boundary. Codex re-issued them as
+// 10R-16R for staleDay = ceil((age - threshold) / 24). Transcribed unchanged.
+describe("staleAlertDue (Codex cases 10R-16R, replacing 10-14)", () => {
+  const cases: [n: string, name: string, args: [number | null, number], expected: unknown][] = [
+    ["10R", "exact threshold is not stale", [30, 30], { due: false }],
+    ["11R", "first instant over threshold is stale day 1", [30.0001, 30], { due: true, staleDay: 1 }],
+    ["12R", "exact threshold plus 24 hours remains stale day 1", [54, 30], { due: true, staleDay: 1 }],
+    ["13R", "exact end of stale day 7 is quiet", [198, 30], { due: false, staleDay: 7 }],
+    ["14R", "no reading is not stale", [null, 30], { due: false }],
   ];
   for (const [n, name, args, expected] of cases) {
     test(`${n}. ${name}`, () => {
       expect(staleAlertDue(...args)).toEqual(expected as never);
     });
   }
+
+  test("15R. the transition that exposed the defect", () => {
+    expect(staleAlertDue(30, 30)).toEqual({ due: false });
+    expect(staleAlertDue(54, 30)).toEqual({ due: true, staleDay: 1 });
+  });
+
+  test("16R. daily cadence sweep through stale days 1-9", () => {
+    expect(staleAlertDue(54, 30)).toEqual({ due: true, staleDay: 1 });
+    expect(staleAlertDue(78, 30)).toEqual({ due: false, staleDay: 2 });
+    expect(staleAlertDue(102, 30)).toEqual({ due: false, staleDay: 3 });
+    expect(staleAlertDue(126, 30)).toEqual({ due: false, staleDay: 4 });
+    expect(staleAlertDue(150, 30)).toEqual({ due: false, staleDay: 5 });
+    expect(staleAlertDue(174, 30)).toEqual({ due: false, staleDay: 6 });
+    expect(staleAlertDue(198, 30)).toEqual({ due: false, staleDay: 7 });
+    expect(staleAlertDue(222, 30)).toEqual({ due: true, staleDay: 8 });
+    expect(staleAlertDue(246, 30)).toEqual({ due: false, staleDay: 9 });
+  });
 });
 
 describe("summarizeIngestError (Codex cases 15-18)", () => {
