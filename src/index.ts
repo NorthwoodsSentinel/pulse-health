@@ -497,6 +497,8 @@ export default {
           let status = "success";
           let errorMsg: string | null = null;
           let rowsAdded = 0;
+          // kintsugi: rows_seen was logged as a literal 0 (Codex audit of 89d350f, 2026-11-12).
+          let rowsSeen = 0;
           let kindsList = "";
           try {
             const access = await oura.getValidAccessToken(
@@ -516,6 +518,7 @@ export default {
               const start = new Date(end.getTime() - OURA_CRON_LOOKBACK_DAYS * 24 * 3600 * 1000);
               const result = await oura.ingestRange(env.DB, access, start, end);
               rowsAdded = result.rowsAdded;
+              rowsSeen = result.rowsSeen;
               kindsList = result.kinds.join(",");
               if (result.errors.length > 0) {
                 status = "partial";
@@ -535,9 +538,9 @@ export default {
           } finally {
             await env.DB.prepare(
               `INSERT INTO ingest_log (source, started_at, finished_at, kinds, rows_added, rows_seen, status, trigger, error)
-               VALUES ('oura', ?1, ?2, ?3, ?4, 0, ?5, 'cron', ?6)`,
+               VALUES ('oura', ?1, ?2, ?3, ?4, ?7, ?5, 'cron', ?6)`,
             )
-              .bind(startedAt, Date.now(), kindsList, rowsAdded, status, errorMsg)
+              .bind(startedAt, Date.now(), kindsList, rowsAdded, status, errorMsg, rowsSeen)
               .run();
           }
 
