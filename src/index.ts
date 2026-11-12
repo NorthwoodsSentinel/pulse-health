@@ -19,6 +19,7 @@ import { signState, verifyState } from "./oauth";
 import * as oura from "./oura";
 import * as strava from "./strava";
 import * as drift from "./drift";
+import * as alerts from "./alerts";
 
 // How far back the daily cron re-reads Oura. The ring holds about a week unsynced;
 // 14 days leaves margin for a late app-open. Was 2 until 2026-11-12 (NOR-289).
@@ -92,6 +93,80 @@ async function pushAll(env: Env, title: string, body: string, url = "/"): Promis
     }
   }
   return delivered;
+}
+
+// Send one alert. ntfy `fleet-watch` first (independent of this Worker's own Web Push); if
+// ntfy does not accept it, one Web Push as fallback. Never throws, never retries.
+async function deliverAlert(env: Env, msg: alerts.AlertMessage): Promise<void> {
+  let delivered = false;
+  try {
+    const res = await fetch("https://ntfy.sh/fleet-watch", {
+      method: "POST",
+      headers: { Title: msg.title, Priority: msg.priority, Tags: "satellite" },
+      body: msg.body,
+    });
+    delivered = res.ok;
+  } catch {
+    delivered = false;
+  }
+  if (delivered) return;
+  try {
+    await pushAll(env, msg.title, msg.body, "/");
+  } catch (e) {
+    console.error("alert fallback push failed", (e as Error).message);
+  }
+}
+
+type IngestOutcome = {
+  startedAt: number;
+  status: string;
+  errorMsg: string | null;
+  rowsAdded: number;
+  rowsSeen: number;
+  kindsList: string;
+};
+
+// Write the cron's ingest_log row, then decide from the log itself whether today is a day
+// to speak (alerts.ts). The row is written first and each step is fenced, so an alert
+// failure cannot lose the row or stop whatever runs next.
+async function logAndAlertIngest(
+  env: Env,
+  source: "oura" | "strava",
+  o: IngestOutcome,
+): Promise<void> {
+  let rowId: number | null = null;
+  try {
+    const res = await env.DB.prepare(
+      `INSERT INTO ingest_log (source, started_at, finished_at, kinds, rows_added, rows_seen, status, trigger, error)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'cron', ?8)`,
+    )
+      .bind(source, o.startedAt, Date.now(), o.kindsList, o.rowsAdded, o.rowsSeen, o.status, o.errorMsg)
+      .run();
+    const id = Number(res.meta?.last_row_id);
+    rowId = Number.isInteger(id) && id > 0 ? id : null;
+  } catch (e) {
+    console.error(`${source} ingest_log write failed`, (e as Error).message);
+  }
+  if (rowId === null) return;
+  try {
+    const streakRow = await env.DB.prepare(alerts.FAILING_STREAK_SQL)
+      .bind(source, rowId)
+      .first<{ n: number }>();
+    const priorRow = await env.DB.prepare(alerts.PRIOR_STREAK_SQL)
+      .bind(source, rowId)
+      .first<{ n: number }>();
+    const decision = alerts.decideIngestAlert(o.status, streakRow?.n ?? 0, priorRow?.n ?? 0);
+    if (decision.kind === "failing") {
+      await deliverAlert(
+        env,
+        alerts.failingMessage(source, o.status, decision.day, o.errorMsg, o.rowsAdded),
+      );
+    } else if (decision.kind === "recovered") {
+      await deliverAlert(env, alerts.recoveredMessage(source, decision.days, o.rowsAdded));
+    }
+  } catch (e) {
+    console.error(`${source} alert step failed`, (e as Error).message);
+  }
 }
 
 export default {
@@ -496,16 +571,18 @@ export default {
     ctx.waitUntil(
       (async () => {
         // ----- Oura -----
+        // kintsugi (2026-11-12, NOR-289): classification is kept truthful and every
+        // notification step is fenced. Only the pull itself can set status; the log row is
+        // written before anything is sent; alerts follow one cadence (see alerts.ts).
         {
           const startedAt = Date.now();
           let status = "success";
           let errorMsg: string | null = null;
           let rowsAdded = 0;
-          // kintsugi: rows_seen was logged as a literal 0 (Codex audit of 89d350f, 2026-11-12).
-          // It counts rows from collections that completed; a collection that throws
+          // rows_seen counts rows from collections that completed; a collection that throws
           // partway through pagination adds its error to errorMsg, not a count.
           let rowsSeen = 0;
-          let kindsList = "";
+          let kinds: string[] = [];
           try {
             const access = await oura.getValidAccessToken(
               env.DB,
@@ -517,104 +594,108 @@ export default {
               errorMsg = "no oura token";
             } else {
               const end = new Date();
-              // kintsugi: nights were lost when the ring synced later than the window
-              // (2026-11-12, NOR-289). Oura only uploads when the phone app is opened, so a
-              // night can arrive days late. Inserts are ON CONFLICT DO NOTHING, so re-reading
-              // a wider window adds missing rows and never rewrites existing ones.
+              // Oura only uploads when the phone app is opened, so a night can arrive days
+              // late; the window is wide enough to catch it (OURA_CRON_LOOKBACK_DAYS).
               const start = new Date(end.getTime() - OURA_CRON_LOOKBACK_DAYS * 24 * 3600 * 1000);
               const result = await oura.ingestRange(env.DB, access, start, end);
               rowsAdded = result.rowsAdded;
               rowsSeen = result.rowsSeen;
-              kindsList = result.kinds.join(",");
+              kinds = result.kinds;
               if (result.errors.length > 0) {
                 status = "partial";
                 errorMsg = result.errors.join(" | ");
-              }
-              if (rowsAdded > 0) {
-                await pushAll(
-                  env,
-                  "Oura digest",
-                  `${rowsAdded} new readings — ${result.kinds.join(", ") || "?"}`,
-                );
               }
             }
           } catch (e) {
             status = "error";
             errorMsg = (e as Error).message;
-          } finally {
-            await env.DB.prepare(
-              `INSERT INTO ingest_log (source, started_at, finished_at, kinds, rows_added, rows_seen, status, trigger, error)
-               VALUES ('oura', ?1, ?2, ?3, ?4, ?7, ?5, 'cron', ?6)`,
-            )
-              .bind(startedAt, Date.now(), kindsList, rowsAdded, status, errorMsg, rowsSeen)
-              .run();
           }
 
-          // ----- Fail-loud staleness guard -----
-          // Silence is not an acceptable state. A failed ingest (e.g. Oura refresh-token
-          // revoked → invalid_grant; the worker cannot self-heal — Rob must re-auth at
-          // /api/oura/connect) must SURFACE, not just sit in ingest_log while /api/brief
-          // keeps serving a frozen "balanced" reading.
-          const alerts: string[] = [];
-          if (status === "error") {
-            alerts.push(
-              `Oura ingest FAILED: ${errorMsg ?? "unknown"}. Re-auth may be required → /api/oura/connect`,
-            );
+          await logAndAlertIngest(env, "oura", {
+            startedAt,
+            status,
+            errorMsg,
+            rowsAdded,
+            rowsSeen,
+            kindsList: kinds.join(","),
+          });
+
+          // The digest push is outside the pull: a push failure is not a pull failure.
+          if (rowsAdded > 0 && status !== "error") {
+            try {
+              await pushAll(env, "Oura digest", `${rowsAdded} new readings — ${kinds.join(", ") || "?"}`);
+            } catch (e) {
+              console.error("oura digest push failed", (e as Error).message);
+            }
           }
-          const fresh = await oura.feedFreshness(env.DB);
-          if (fresh.stale) {
-            const ageTxt =
-              fresh.ingest_age_hours === null ? "never" : `${Math.round(fresh.ingest_age_hours)}h ago`;
-            alerts.push(
-              `Pulse-health feed STALE — last successful ingest ${ageTxt}. Brief is serving frozen data; re-auth at /api/oura/connect`,
-            );
-          }
-          if (alerts.length) {
-            console.log("pulse-health ALERT", { alerts });
-            await pushAll(env, "⚠️ Pulse-health", alerts.join(" | "), "/");
+
+          // Staleness: pulls succeed but nothing new arrives (the ring has not synced). A
+          // failing pull is already covered by the failing alert, so this speaks only on
+          // success, and on the same cadence instead of every day.
+          if (status === "success") {
+            try {
+              const fresh = await oura.feedFreshness(env.DB);
+              const stale = alerts.staleAlertDue(fresh.ingest_age_hours, oura.STALE_INGEST_HOURS);
+              if (stale.due && "staleDay" in stale && fresh.ingest_age_hours !== null) {
+                await deliverAlert(env, alerts.staleMessage(stale.staleDay, fresh.ingest_age_hours));
+              }
+            } catch (e) {
+              console.error("oura staleness check failed", (e as Error).message);
+            }
           }
         }
 
-        // ----- Strava (silent no-op if not yet connected) -----
+        // ----- Strava (skipped when not connected) -----
         {
           const startedAt = Date.now();
           let status = "success";
           let errorMsg: string | null = null;
           let rowsAdded = 0;
           let rowsSeen = 0;
-          let kindsList = "";
+          let kinds: string[] = [];
+          // No stored token means Strava was never connected: skip the block. It used to
+          // `return` here, which logged a false success row and left the handler before the
+          // drift watcher ran.
+          let notConnected = false;
           try {
             const access = await strava.getValidAccessToken(
               env.DB,
               env.STRAVA_CLIENT_ID,
               env.STRAVA_CLIENT_SECRET,
             );
-            if (!access) return;
-            const result = await strava.ingest(env.DB, access, 7);
-            rowsAdded = result.rowsAdded;
-            rowsSeen = result.rowsSeen;
-            kindsList = result.kinds.join(",");
-            if (result.errors.length > 0) {
-              status = "partial";
-              errorMsg = result.errors.join(" | ");
-            }
-            if (rowsAdded > 0) {
-              await pushAll(
-                env,
-                "Strava digest",
-                `${rowsAdded} new readings — ${result.kinds.join(", ") || "?"}`,
-              );
+            if (!access) {
+              notConnected = true;
+            } else {
+              const result = await strava.ingest(env.DB, access, 7);
+              rowsAdded = result.rowsAdded;
+              rowsSeen = result.rowsSeen;
+              kinds = result.kinds;
+              if (result.errors.length > 0) {
+                status = "partial";
+                errorMsg = result.errors.join(" | ");
+              }
             }
           } catch (e) {
             status = "error";
             errorMsg = (e as Error).message;
-          } finally {
-            await env.DB.prepare(
-              `INSERT INTO ingest_log (source, started_at, finished_at, kinds, rows_added, rows_seen, status, trigger, error)
-               VALUES ('strava', ?1, ?2, ?3, ?4, ?5, ?6, 'cron', ?7)`,
-            )
-              .bind(startedAt, Date.now(), kindsList, rowsAdded, rowsSeen, status, errorMsg)
-              .run();
+          }
+
+          if (!notConnected) {
+            await logAndAlertIngest(env, "strava", {
+              startedAt,
+              status,
+              errorMsg,
+              rowsAdded,
+              rowsSeen,
+              kindsList: kinds.join(","),
+            });
+            if (rowsAdded > 0 && status !== "error") {
+              try {
+                await pushAll(env, "Strava digest", `${rowsAdded} new readings — ${kinds.join(", ") || "?"}`);
+              } catch (e) {
+                console.error("strava digest push failed", (e as Error).message);
+              }
+            }
           }
         }
 
