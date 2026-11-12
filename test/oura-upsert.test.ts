@@ -229,8 +229,19 @@ describe("OURA_UPSERT_SQL (Codex adversarial cases, NOR-289)", () => {
           .all(e.kind, e.recordedAt) as { source: string; received_at: number; payload: string }[];
         expect(rows.length).toBe(e.count);
         expect(rows[0].source).toBe("oura");
-        if (e.id !== undefined) expect(JSON.parse(rows[0].payload).id).toBe(e.id);
         if (e.receivedAt !== undefined) expect(rows[0].received_at).toBe(e.receivedAt);
+        // The stored payload must be, byte for byte, the payload of the execution that
+        // the case says won (identified by its received_at). Checking only `id` would let
+        // a same-ID revision pass while the old content was kept (Codex audit of a6c807b).
+        if (e.receivedAt !== undefined) {
+          const winner = c.execs.find(
+            ([k, rec, recv]) => k === e.kind && rec === e.recordedAt && recv === e.receivedAt,
+          );
+          expect(winner).toBeDefined();
+          const winnerText = typeof winner![3] === "string" ? winner![3] : JSON.stringify(winner![3]);
+          expect(rows[0].payload).toBe(winnerText);
+        }
+        if (e.id !== undefined) expect(JSON.parse(rows[0].payload).id).toBe(e.id);
       }
       if (c.totalSleepRows !== undefined) {
         const n = db.query("SELECT count(*) AS n FROM readings WHERE kind = 'sleep'").get() as { n: number };
