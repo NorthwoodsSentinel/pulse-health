@@ -7,6 +7,7 @@ import { mock, setSystemTime } from "bun:test";
 import { Database } from "bun:sqlite";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { retryConfig } from "../src/http";
 
 export type Fixture = {
   priorIngestLog?: Array<{ source: "oura" | "strava"; status: string; trigger?: "cron" | "manual" }>;
@@ -18,6 +19,12 @@ export type Fixture = {
   lastOuraReadingAgeHours?: number | null;
   ntfy?: "ok" | "429" | "throw";
   push?: "ok" | "throw";
+  /** The INSERT INTO ingest_log for that source throws. */
+  ingestLogWriteFails?: "oura" | "strava";
+  /** Requests for that Oura collection fail `failures` times, then succeed with one new row. */
+  ouraTransient?: { kind: string; failures: number; mode: 500 | 502 | 429 | "throw" };
+  /** The same, for one Strava data endpoint. */
+  stravaTransient?: { endpoint: "athlete" | "stats" | "activities"; failures: number; mode: 500 | 429 | "throw" };
 };
 
 export type RunResult = {
@@ -26,6 +33,8 @@ export type RunResult = {
   pushes: Array<{ title: string; body: string }>;
   driftLogged: boolean;
   threw: boolean;
+  /** Requests made, keyed "oura:<kind>", "oura:token", "strava:athlete", "strava:stats", "strava:activities", "strava:token". */
+  requests: Record<string, number>;
 };
 
 const SCHEMA = readFileSync(join(import.meta.dir, "..", "shared", "schema.sql"), "utf8");
@@ -47,10 +56,13 @@ mock.module("../src/push", () => ({
 }));
 
 // ---- Minimal D1 shim over bun:sqlite (prepare / bind / run / all / first / batch). ----
-function d1(db: Database) {
+function d1(db: Database, failIngestLogFor?: string) {
   const make = (sql: string, args: unknown[] = []) => ({
     bind: (...a: unknown[]) => make(sql, a),
     run: async () => {
+      if (failIngestLogFor && sql.includes("INSERT INTO ingest_log") && args[0] === failIngestLogFor) {
+        throw new Error("SECRET-D1-WRITE-FAILED");
+      }
       const r = db.prepare(sql).run(...(args as never[]));
       return { success: true, meta: { changes: r.changes, last_row_id: Number(r.lastInsertRowid) } };
     },
@@ -127,6 +139,20 @@ export async function runScheduled(fx: Fixture = {}): Promise<RunResult> {
   pushMode = f.push;
   pushCalls = [];
   const ntfyCalls: RunResult["ntfy"] = [];
+  const requests: Record<string, number> = {};
+  const count = (key: string) => (requests[key] = (requests[key] ?? 0) + 1);
+  // A transient failure for one endpoint: fail the first `failures` requests, then behave normally.
+  const transient = (
+    spec: { failures: number; mode: number | "throw" } | undefined,
+    seen: number,
+    body: string,
+  ): Response | "throw" | null => {
+    if (!spec || seen > spec.failures) return null;
+    if (spec.mode === "throw") return "throw";
+    return new Response(body, { status: spec.mode });
+  };
+  const savedDelays = retryConfig.delaysMs;
+  retryConfig.delaysMs = [0, 0];
 
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -144,10 +170,17 @@ export async function runScheduled(fx: Fixture = {}): Promise<RunResult> {
     }
 
     if (url.startsWith("https://api.ouraring.com/oauth/token")) {
+      count("oura:token");
       throw new Error("SECRET-OURA-THROW");
     }
     if (url.startsWith("https://api.ouraring.com/v2/usercollection/")) {
       const kind = url.slice("https://api.ouraring.com/v2/usercollection/".length).split("?")[0];
+      const seen = count(`oura:${kind}`);
+      if (f.ouraTransient && f.ouraTransient.kind === kind) {
+        const t = transient(f.ouraTransient, seen, "SECRET-OURA-BODY");
+        if (t === "throw") throw new Error("SECRET-TRANSIENT-THROW");
+        if (t) return t;
+      }
       if (f.oura === "partial" && kind === "daily_stress") {
         return new Response("SECRET-OURA-BODY", { status: 500 });
       }
@@ -160,15 +193,29 @@ export async function runScheduled(fx: Fixture = {}): Promise<RunResult> {
     }
 
     if (url.startsWith("https://www.strava.com/oauth/token")) {
+      count("strava:token");
       throw new Error("SECRET-STRAVA-THROW");
     }
+    const stravaTransient = (endpoint: "athlete" | "stats" | "activities", seen: number) => {
+      if (!f.stravaTransient || f.stravaTransient.endpoint !== endpoint) return null;
+      return transient(f.stravaTransient, seen, "SECRET-STRAVA-BODY");
+    };
     if (url.startsWith("https://www.strava.com/api/v3/athlete/activities")) {
+      const t = stravaTransient("activities", count("strava:activities"));
+      if (t === "throw") throw new Error("SECRET-TRANSIENT-THROW");
+      if (t) return t;
       return jsonResponse([]);
     }
     if (url.startsWith("https://www.strava.com/api/v3/athletes/")) {
+      const t = stravaTransient("stats", count("strava:stats"));
+      if (t === "throw") throw new Error("SECRET-TRANSIENT-THROW");
+      if (t) return t;
       return jsonResponse({ all_ride_totals: { count: 0 } });
     }
     if (url.startsWith("https://www.strava.com/api/v3/athlete")) {
+      const t = stravaTransient("athlete", count("strava:athlete"));
+      if (t === "throw") throw new Error("SECRET-TRANSIENT-THROW");
+      if (t) return t;
       if (f.strava === "partial") return new Response("SECRET-STRAVA-BODY", { status: 403 });
       return jsonResponse({ id: 1 });
     }
@@ -180,7 +227,7 @@ export async function runScheduled(fx: Fixture = {}): Promise<RunResult> {
     scheduled: (e: unknown, env: unknown, ctx: { waitUntil: (p: Promise<unknown>) => void }) => Promise<void>;
   };
   const env = {
-    DB: d1(db),
+    DB: d1(db, f.ingestLogWriteFails),
     ASSETS: {},
     ADMIN_TOKEN: "admin",
     OURA_CLIENT_ID: "oura-client-id",
@@ -204,6 +251,7 @@ export async function runScheduled(fx: Fixture = {}): Promise<RunResult> {
     threw = true;
   } finally {
     globalThis.fetch = realFetch;
+    retryConfig.delaysMs = savedDelays;
     setSystemTime();
   }
 
@@ -215,5 +263,5 @@ export async function runScheduled(fx: Fixture = {}): Promise<RunResult> {
   const driftLogged = hasDrift && (db.prepare("SELECT count(*) AS n FROM drift_log").get() as { n: number }).n > 0;
   db.close();
 
-  return { ingestLog, ntfy: ntfyCalls, pushes: [...pushCalls], driftLogged, threw };
+  return { ingestLog, ntfy: ntfyCalls, pushes: [...pushCalls], driftLogged, threw, requests };
 }

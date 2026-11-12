@@ -371,3 +371,178 @@ describe("scheduled handler (Codex cases 27-35 and 40-50, NOR-289)", () => {
     });
   }
 });
+
+// Cases 51-63: retry of data requests, and "no log row, no alert". Written by Codex (fixed
+// brief, MODE tests, 2026-11-12) from the design, before the audit. Fixtures and
+// expectations are transcribed unchanged.
+describe("retry and the log-row gate (Codex cases 51-63, NOR-289)", () => {
+  const all = (r: RunResult) => [...r.ntfy.map((n) => n.title), ...r.pushes.map((p) => p.title)];
+  const absentOrZero = (r: RunResult, key: string) => expect(r.requests[key] ?? 0).toBe(0);
+  const OURA_KINDS = ["daily_sleep", "daily_readiness", "daily_activity", "daily_stress", "sleep", "workout"];
+
+  test("51. successful stale pull whose Oura log write fails emits no alert", async () => {
+    const r = await runScheduled({ ingestLogWriteFails: "oura", oura: "ok", ouraNewRows: false, lastOuraReadingAgeHours: 222, ntfy: "ok" });
+    expect(r.ingestLog.filter((x) => x.source === "oura")).toHaveLength(0);
+    expect(all(r)).not.toContain("health: oura has no new data (day 8)");
+    expect(all(r).some((t) => t.includes("health: oura pull"))).toBe(false);
+    expect(r.threw).toBe(false);
+    expect(r.driftLogged).toBe(true);
+  });
+
+  test("52. failing pull whose Oura log write fails emits no failure or stale alert", async () => {
+    const r = await runScheduled({ ingestLogWriteFails: "oura", oura: "partial", ouraNewRows: false, lastOuraReadingAgeHours: 222, ntfy: "ok" });
+    expect(r.ingestLog.filter((x) => x.source === "oura")).toHaveLength(0);
+    expect(r.requests["oura:daily_stress"]).toBe(3);
+    expect(all(r)).not.toContain("health: oura pull partial (day 1)");
+    expect(all(r)).not.toContain("health: oura has no new data (day 8)");
+    expect(all(r).some((t) => t.includes("health: oura pull"))).toBe(false);
+    expect(all(r).some((t) => t.includes("health: oura has no new data"))).toBe(false);
+    expect(r.threw).toBe(false);
+    expect(r.driftLogged).toBe(true);
+  });
+
+  test("53. Oura 429 recovers on the second request", async () => {
+    const r = await runScheduled({ ouraTransient: { kind: "daily_stress", failures: 1, mode: 429 }, ntfy: "ok" });
+    expect(r.requests["oura:daily_stress"]).toBe(2);
+    expect(r.ingestLog).toContainEqual(expect.objectContaining({ source: "oura", status: "success", trigger: "cron" }));
+    expect(all(r)).not.toContain("health: oura pull partial (day 1)");
+    expect(all(r)).not.toContain("health: oura pull error (day 1)");
+    expect(r.threw).toBe(false);
+  });
+
+  test("54. Oura thrown request recovers on the third request", async () => {
+    const r = await runScheduled({ ouraTransient: { kind: "sleep", failures: 2, mode: "throw" }, ntfy: "ok" });
+    expect(r.requests["oura:sleep"]).toBe(3);
+    expect(r.ingestLog.find((x) => x.source === "oura")?.status).toBe("success");
+    expect(all(r)).not.toContain("health: oura pull partial (day 1)");
+    expect(all(r)).not.toContain("health: oura pull error (day 1)");
+    expect(r.threw).toBe(false);
+  });
+
+  test("55. Oura exhausted 502 remains partial with unchanged error text", async () => {
+    const r = await runScheduled({ ouraTransient: { kind: "daily_stress", failures: 3, mode: 502 }, ntfy: "ok" });
+    expect(r.requests["oura:daily_stress"]).toBe(3);
+    const row = r.ingestLog.find((x) => x.source === "oura");
+    expect(row?.status).toBe("partial");
+    expect(row?.trigger).toBe("cron");
+    expect(row?.error).toBe("daily_stress: Oura /daily_stress 502: SECRET-OURA-BODY");
+    expect(r.ntfy.filter((n) => n.title === "health: oura pull partial (day 1)")).toHaveLength(1);
+    expect(all(r).some((t) => t.includes("health: oura has no new data"))).toBe(false);
+    expect(r.threw).toBe(false);
+  });
+
+  test("56. all unaffected Oura collections remain single-request", async () => {
+    const r = await runScheduled({ ouraTransient: { kind: "daily_stress", failures: 1, mode: 500 } });
+    expect(r.requests["oura:daily_stress"]).toBe(2);
+    for (const kind of ["daily_sleep", "daily_readiness", "daily_activity", "sleep", "workout"]) {
+      expect(r.requests[`oura:${kind}`]).toBe(1);
+    }
+    absentOrZero(r, "oura:token");
+  });
+
+  test("57. Strava athlete 500 recovers", async () => {
+    const r = await runScheduled({ stravaTransient: { endpoint: "athlete", failures: 1, mode: 500 }, ntfy: "ok" });
+    expect(r.requests["strava:athlete"]).toBe(2);
+    expect(r.requests["strava:stats"]).toBe(1);
+    expect(r.requests["strava:activities"]).toBe(1);
+    expect(r.ingestLog.find((x) => x.source === "strava")?.status).toBe("success");
+    expect(all(r)).not.toContain("health: strava pull partial (day 1)");
+    expect(all(r)).not.toContain("health: strava pull error (day 1)");
+  });
+
+  test("58. Strava stats 429 recovers on the third request", async () => {
+    const r = await runScheduled({ stravaTransient: { endpoint: "stats", failures: 2, mode: 429 }, ntfy: "ok" });
+    expect(r.requests["strava:athlete"]).toBe(1);
+    expect(r.requests["strava:stats"]).toBe(3);
+    expect(r.requests["strava:activities"]).toBe(1);
+    expect(r.ingestLog.find((x) => x.source === "strava")?.status).toBe("success");
+    expect(all(r)).not.toContain("health: strava pull partial (day 1)");
+    expect(all(r)).not.toContain("health: strava pull error (day 1)");
+  });
+
+  test("59. Strava activities network exception recovers", async () => {
+    const r = await runScheduled({ stravaTransient: { endpoint: "activities", failures: 1, mode: "throw" }, ntfy: "ok" });
+    expect(r.requests["strava:athlete"]).toBe(1);
+    expect(r.requests["strava:stats"]).toBe(1);
+    expect(r.requests["strava:activities"]).toBe(2);
+    expect(r.ingestLog.find((x) => x.source === "strava")?.status).toBe("success");
+    expect(all(r)).not.toContain("health: strava pull partial (day 1)");
+    expect(all(r)).not.toContain("health: strava pull error (day 1)");
+  });
+
+  test("60. Strava exhausted activities failures remain partial", async () => {
+    const r = await runScheduled({ stravaTransient: { endpoint: "activities", failures: 3, mode: 500 }, ntfy: "ok" });
+    expect(r.requests["strava:activities"]).toBe(3);
+    const row = r.ingestLog.find((x) => x.source === "strava");
+    expect(row?.status).toBe("partial");
+    expect(row?.trigger).toBe("cron");
+    expect(r.ntfy.filter((n) => n.title === "health: strava pull partial (day 1)")).toHaveLength(1);
+    expect(r.threw).toBe(false);
+  });
+
+  test("61. definitive Strava 403 costs one request", async () => {
+    const r = await runScheduled({ strava: "partial", ntfy: "ok" });
+    expect(r.requests["strava:athlete"]).toBe(1);
+    absentOrZero(r, "strava:stats");
+    expect(r.requests["strava:activities"]).toBe(1);
+    const row = r.ingestLog.find((x) => x.source === "strava");
+    expect(row?.error).toBe("athlete: Strava /athlete 403: SECRET-STRAVA-BODY");
+    expect(row?.status).toBe("partial");
+    expect(r.ntfy.filter((n) => n.title === "health: strava pull partial (day 1)")).toHaveLength(1);
+  });
+
+  test("62. Oura refresh exception is never retried", async () => {
+    const r = await runScheduled({ oura: "throw", ntfy: "ok" });
+    expect(r.requests["oura:token"]).toBe(1);
+    for (const kind of OURA_KINDS) absentOrZero(r, `oura:${kind}`);
+    expect(r.ingestLog.find((x) => x.source === "oura")?.status).toBe("error");
+    expect(r.ntfy.filter((n) => n.title === "health: oura pull error (day 1)")).toHaveLength(1);
+    expect(r.threw).toBe(false);
+  });
+
+  test("63. Strava refresh exception is never retried", async () => {
+    const r = await runScheduled({ strava: "throw", ntfy: "ok" });
+    expect(r.requests["strava:token"]).toBe(1);
+    absentOrZero(r, "strava:athlete");
+    absentOrZero(r, "strava:stats");
+    absentOrZero(r, "strava:activities");
+    expect(r.ingestLog.find((x) => x.source === "strava")?.status).toBe("error");
+    expect(r.ntfy.filter((n) => n.title === "health: strava pull error (day 1)")).toHaveLength(1);
+    expect(r.threw).toBe(false);
+  });
+});
+
+// The design review of the retry change (2026-11-12) found that the digest pushes were not
+// covered by "no log row, no alert" and that the planned evidence never reached them. The
+// scenario is the reviewer's (a successful pull that adds rows, with that source's log
+// write failing); the assertions are the author's.
+describe("no log row, no digest either (design-review regression)", () => {
+  test("Oura pull adds rows but its log write fails: nothing is sent for Oura", async () => {
+    const r = await runScheduled({ ingestLogWriteFails: "oura", oura: "ok", ntfy: "ok" });
+    expect(r.ingestLog.filter((x) => x.source === "oura")).toHaveLength(0);
+    expect(r.pushes.some((p) => p.title === "Oura digest")).toBe(false);
+    expect([...r.ntfy, ...r.pushes].some((m) => m.title.toLowerCase().includes("oura"))).toBe(false);
+    // The other source is unaffected and still reports normally.
+    expect(r.ingestLog.find((x) => x.source === "strava")?.status).toBe("success");
+    expect(r.pushes.some((p) => p.title === "Strava digest")).toBe(true);
+    expect(r.driftLogged).toBe(true);
+    expect(r.threw).toBe(false);
+  });
+
+  test("Strava pull adds rows but its log write fails: nothing is sent for Strava", async () => {
+    const r = await runScheduled({ ingestLogWriteFails: "strava", strava: "ok", ntfy: "ok" });
+    expect(r.ingestLog.filter((x) => x.source === "strava")).toHaveLength(0);
+    expect(r.pushes.some((p) => p.title === "Strava digest")).toBe(false);
+    expect([...r.ntfy, ...r.pushes].some((m) => m.title.toLowerCase().includes("strava"))).toBe(false);
+    expect(r.ingestLog.find((x) => x.source === "oura")?.status).toBe("success");
+    expect(r.pushes.some((p) => p.title === "Oura digest")).toBe(true);
+    expect(r.driftLogged).toBe(true);
+    expect(r.threw).toBe(false);
+  });
+
+  test("control: with the log write working, both digests are sent", async () => {
+    const r = await runScheduled({ ntfy: "ok" });
+    expect(r.pushes.some((p) => p.title === "Oura digest")).toBe(true);
+    expect(r.pushes.some((p) => p.title === "Strava digest")).toBe(true);
+  });
+});

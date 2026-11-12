@@ -1,6 +1,8 @@
 // Strava API client — OAuth + activity fetcher.
 // Docs: https://developers.strava.com/docs/
 
+import { fetchWithRetry } from "./http";
+
 const OAUTH_AUTHORIZE = "https://www.strava.com/oauth/authorize";
 const OAUTH_TOKEN = "https://www.strava.com/oauth/token";
 const API_BASE = "https://www.strava.com/api/v3";
@@ -140,7 +142,9 @@ interface StravaActivity {
 }
 
 async function fetchAthlete(token: string): Promise<unknown> {
-  const res = await fetch(`${API_BASE}/athlete`, {
+  // The three data GETs below retry on a thrown request, 429 or 5xx (see http.ts).
+  // The token requests above do not.
+  const res = await fetchWithRetry(`${API_BASE}/athlete`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -150,7 +154,7 @@ async function fetchAthlete(token: string): Promise<unknown> {
 }
 
 async function fetchAthleteStats(token: string, athleteId: number): Promise<unknown> {
-  const res = await fetch(`${API_BASE}/athletes/${athleteId}/stats`, {
+  const res = await fetchWithRetry(`${API_BASE}/athletes/${athleteId}/stats`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -172,7 +176,7 @@ async function fetchActivitiesPaged(
       per_page: String(perPage),
     });
     if (after) qs.set("after", String(after));
-    const res = await fetch(`${API_BASE}/athlete/activities?${qs.toString()}`, {
+    const res = await fetchWithRetry(`${API_BASE}/athlete/activities?${qs.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {

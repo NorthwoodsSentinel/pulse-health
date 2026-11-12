@@ -129,11 +129,13 @@ type IngestOutcome = {
 // Write the cron's ingest_log row, then decide from the log itself whether today is a day
 // to speak (alerts.ts). The row is written first and each step is fenced, so an alert
 // failure cannot lose the row or stop whatever runs next.
+// Returns whether the row was written. No row means no alert of any kind for this pull,
+// and the caller must hold back its own alerts too (Codex audit of ea4647b).
 async function logAndAlertIngest(
   env: Env,
   source: "oura" | "strava",
   o: IngestOutcome,
-): Promise<void> {
+): Promise<boolean> {
   let rowId: number | null = null;
   try {
     const res = await env.DB.prepare(
@@ -147,7 +149,7 @@ async function logAndAlertIngest(
   } catch (e) {
     console.error(`${source} ingest_log write failed`, (e as Error).message);
   }
-  if (rowId === null) return;
+  if (rowId === null) return false;
   try {
     const streakRow = await env.DB.prepare(alerts.FAILING_STREAK_SQL)
       .bind(source, rowId)
@@ -167,6 +169,7 @@ async function logAndAlertIngest(
   } catch (e) {
     console.error(`${source} alert step failed`, (e as Error).message);
   }
+  return true;
 }
 
 export default {
@@ -617,7 +620,7 @@ export default {
             errorMsg = (e as Error).message;
           }
 
-          await logAndAlertIngest(env, "oura", {
+          const ouraLogged = await logAndAlertIngest(env, "oura", {
             startedAt,
             status,
             errorMsg,
@@ -626,8 +629,9 @@ export default {
             kindsList: kinds.join(","),
           });
 
-          // The digest push is outside the pull: a push failure is not a pull failure.
-          if (rowsAdded > 0 && status !== "error") {
+          // The digest push is outside the pull: a push failure is not a pull failure. Like
+          // every other notification, it needs today's log row: no row, nothing is sent.
+          if (ouraLogged && rowsAdded > 0 && status !== "error") {
             try {
               await pushAll(env, "Oura digest", `${rowsAdded} new readings — ${kinds.join(", ") || "?"}`);
             } catch (e) {
@@ -637,8 +641,9 @@ export default {
 
           // Staleness: pulls succeed but nothing new arrives (the ring has not synced). A
           // failing pull is already covered by the failing alert, so this speaks only on
-          // success, and on the same cadence instead of every day.
-          if (status === "success") {
+          // success, and on the same cadence instead of every day. It also needs today's row
+          // to exist: an alert never goes out for a pull that left no log row.
+          if (status === "success" && ouraLogged) {
             try {
               const fresh = await oura.feedFreshness(env.DB);
               // Decide on the exact age. feedFreshness rounds ingest_age_hours to one decimal
@@ -692,7 +697,7 @@ export default {
           }
 
           if (!notConnected) {
-            await logAndAlertIngest(env, "strava", {
+            const stravaLogged = await logAndAlertIngest(env, "strava", {
               startedAt,
               status,
               errorMsg,
@@ -700,7 +705,7 @@ export default {
               rowsSeen,
               kindsList: kinds.join(","),
             });
-            if (rowsAdded > 0 && status !== "error") {
+            if (stravaLogged && rowsAdded > 0 && status !== "error") {
               try {
                 await pushAll(env, "Strava digest", `${rowsAdded} new readings — ${kinds.join(", ") || "?"}`);
               } catch (e) {

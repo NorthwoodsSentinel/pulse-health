@@ -1,6 +1,8 @@
 // Oura API client — OAuth + daily fetchers.
 // Docs: https://cloud.ouraring.com/docs/
 
+import { fetchWithRetry } from "./http";
+
 const OAUTH_AUTHORIZE = "https://cloud.ouraring.com/oauth/authorize";
 const OAUTH_TOKEN = "https://api.ouraring.com/oauth/token";
 const API_BASE = "https://api.ouraring.com/v2/usercollection";
@@ -313,7 +315,8 @@ async function fetchPaged(
     const qs = new URLSearchParams(params);
     if (nextToken) qs.set("next_token", nextToken);
     const url = `${API_BASE}${endpoint}?${qs.toString()}`;
-    const res = await fetch(url, {
+    // Data GET: retried on a thrown request, 429 or 5xx (see http.ts). Token requests are not.
+    const res = await fetchWithRetry(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {
