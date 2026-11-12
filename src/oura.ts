@@ -1,6 +1,8 @@
 // Oura API client — OAuth + daily fetchers.
 // Docs: https://cloud.ouraring.com/docs/
 
+import { fetchWithRetry } from "./http";
+
 const OAUTH_AUTHORIZE = "https://cloud.ouraring.com/oauth/authorize";
 const OAUTH_TOKEN = "https://api.ouraring.com/oauth/token";
 const API_BASE = "https://api.ouraring.com/v2/usercollection";
@@ -224,6 +226,80 @@ export async function getValidAccessToken(
   return refreshed.access_token;
 }
 
+// kintsugi: the night was being displaced by an early-evening rest (2026-11-12, NOR-289).
+// Oura returns several `sleep` documents for one `day` (the night is type `long_sleep`;
+// naps and rests are `sleep`, `late_nap`, `rest`) and files an evening rest under the
+// NEXT day. recorded_at for `sleep` is midnight of `day`, so they share one key, and
+// DO NOTHING kept whichever arrived first. Readers assume one sleep row per day, so the
+// key stays and the winner changes:
+//   - a different document replaces the stored one only if it ranks strictly higher
+//     (long_sleep outranks every other type; then longer total_sleep_duration; `deleted`
+//     loses to everything; a tie between two different documents changes nothing);
+//   - a changed revision of the SAME document (same Oura id) always replaces it.
+// Every other kind: the WHERE is false, so behaviour is still first-write-wins.
+// Parameters: ?1 kind, ?2 recorded_at (ms), ?3 received_at (ms), ?4 payload (JSON text).
+const sleepRank = (p: string) => `(CASE
+    WHEN NOT json_valid(${p}) THEN -2
+    WHEN json_extract(${p}, '$.type') = 'deleted' THEN -1
+    ELSE (CASE WHEN json_extract(${p}, '$.type') = 'long_sleep' THEN 1000000000 ELSE 0 END)
+         + MIN(MAX(COALESCE(CAST(json_extract(${p}, '$.total_sleep_duration') AS INTEGER), 0), 0), 999999999)
+  END)`;
+
+// kintsugi: the day's stress row was a frozen morning snapshot (2026-11-12, NOR-289).
+// Oura's `daily_stress` document for a day accumulates through the day. The cron first
+// sees today's at 13:00 UTC, usually 0/0, and first-write-wins kept that forever. There is
+// one such document per day, so the key already names it: a differing version now
+// replaces the stored one, but only if it carries at least as many numeric measurements
+// (stress_high, recovery_high as JSON numbers). Text, booleans, arrays, objects and nulls
+// are not measurements, so a partial or junk version cannot displace a real reading.
+// Downward numeric revisions are accepted: the figure is Oura's.
+const stressNums = (p: string) => `(
+    (CASE WHEN json_type(${p}, '$.stress_high') IN ('integer', 'real') THEN 1 ELSE 0 END)
+  + (CASE WHEN json_type(${p}, '$.recovery_high') IN ('integer', 'real') THEN 1 ELSE 0 END))`;
+
+export const OURA_UPSERT_SQL = `INSERT INTO readings (source, kind, recorded_at, received_at, payload)
+VALUES ('oura', ?1, ?2, ?3, ?4)
+ON CONFLICT(source, kind, recorded_at) DO UPDATE SET
+  payload = excluded.payload,
+  received_at = excluded.received_at
+WHERE (CASE
+  WHEN readings.kind = 'sleep' THEN (CASE
+    WHEN NOT json_valid(excluded.payload) THEN 0
+    WHEN ${sleepRank("excluded.payload")} > ${sleepRank("readings.payload")} THEN 1
+    WHEN NOT json_valid(readings.payload) THEN 0
+    WHEN json_extract(excluded.payload, '$.id') IS NOT NULL
+     AND json_extract(excluded.payload, '$.id') = json_extract(readings.payload, '$.id')
+     AND excluded.payload <> readings.payload THEN 1
+    ELSE 0
+  END)
+  WHEN readings.kind = 'daily_stress' THEN (CASE
+    WHEN NOT json_valid(excluded.payload) THEN 0
+    WHEN NOT json_valid(readings.payload) THEN 1
+    WHEN excluded.payload = readings.payload THEN 0
+    WHEN ${stressNums("excluded.payload")} >= ${stressNums("readings.payload")} THEN 1
+    ELSE 0
+  END)
+  ELSE 0
+END) = 1`;
+
+// The digest's Oura rows: exactly the newest stored row of each of the four kinds it shows.
+export const OURA_DIGEST_SQL = `SELECT r.kind, r.payload, r.recorded_at FROM readings r
+WHERE r.source = 'oura'
+  AND r.kind IN ('daily_sleep', 'daily_readiness', 'daily_stress', 'sleep')
+  AND r.recorded_at = (
+    SELECT MAX(recorded_at) FROM readings WHERE source = 'oura' AND kind = r.kind
+  )`;
+
+// A `daily_stress` item must carry a real calendar day, or recordedAtFromItem would fall
+// back to "now", store it beside the real row for the day, and make it the newest reading.
+export function hasValidDay(item: unknown): boolean {
+  if (typeof item !== "object" || item === null) return false;
+  const day = (item as { day?: unknown }).day;
+  if (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+  const t = new Date(`${day}T00:00:00Z`);
+  return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === day;
+}
+
 function fmtDate(d: Date): string {
   return d.toISOString().slice(0, 10); // YYYY-MM-DD
 }
@@ -239,7 +315,8 @@ async function fetchPaged(
     const qs = new URLSearchParams(params);
     if (nextToken) qs.set("next_token", nextToken);
     const url = `${API_BASE}${endpoint}?${qs.toString()}`;
-    const res = await fetch(url, {
+    // Data GET: retried on a thrown request, 429 or 5xx (see http.ts). Token requests are not.
+    const res = await fetchWithRetry(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {
@@ -283,22 +360,27 @@ export async function ingestRange(
   for (const kind of FETCHED_KINDS) {
     try {
       const params: Record<string, string> = { start_date: start, end_date: end };
-      const items = await fetchPaged(`/${kind}`, token, params);
-      result.rowsSeen += items.length;
+      const fetched = await fetchPaged(`/${kind}`, token, params);
+      result.rowsSeen += fetched.length;
+      // daily_stress only: never store an item without a real calendar day (see hasValidDay).
+      const items = kind === "daily_stress" ? fetched.filter(hasValidDay) : fetched;
+      if (items.length < fetched.length) {
+        result.errors.push(
+          `${kind}: ${fetched.length - items.length} item(s) without a valid day were skipped`,
+        );
+      }
       if (items.length === 0) continue;
       result.kinds.push(kind);
 
-      // Batch insert with ON CONFLICT IGNORE
-      const stmt = db.prepare(
-        `INSERT INTO readings (source, kind, recorded_at, received_at, payload)
-         VALUES ('oura', ?1, ?2, ?3, ?4)
-         ON CONFLICT(source, kind, recorded_at) DO NOTHING`,
-      );
+      // Batch upsert: `sleep` and `daily_stress` can be replaced by a better or newer
+      // version; every other kind keeps first-write-wins. See OURA_UPSERT_SQL.
+      const stmt = db.prepare(OURA_UPSERT_SQL);
       const batch = items.map((item) =>
         stmt.bind(kind, recordedAtFromItem(kind, item), now, JSON.stringify(item)),
       );
       const results = await db.batch(batch);
       for (const r of results) {
+        // Counts new rows and, for `sleep`, rows replaced by a better or revised document.
         if (r.meta?.changes && r.meta.changes > 0) result.rowsAdded += r.meta.changes;
       }
     } catch (e) {
