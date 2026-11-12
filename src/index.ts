@@ -498,6 +498,8 @@ export default {
           let errorMsg: string | null = null;
           let rowsAdded = 0;
           // kintsugi: rows_seen was logged as a literal 0 (Codex audit of 89d350f, 2026-11-12).
+          // It counts rows from collections that completed; a collection that throws
+          // partway through pagination adds its error to errorMsg, not a count.
           let rowsSeen = 0;
           let kindsList = "";
           try {
