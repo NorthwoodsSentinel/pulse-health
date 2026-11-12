@@ -224,6 +224,41 @@ export async function getValidAccessToken(
   return refreshed.access_token;
 }
 
+// kintsugi: the night was being displaced by an early-evening rest (2026-11-12, NOR-289).
+// Oura returns several `sleep` documents for one `day` (the night is type `long_sleep`;
+// naps and rests are `sleep`, `late_nap`, `rest`) and files an evening rest under the
+// NEXT day. recorded_at for `sleep` is midnight of `day`, so they share one key, and
+// DO NOTHING kept whichever arrived first. Readers assume one sleep row per day, so the
+// key stays and the winner changes:
+//   - a different document replaces the stored one only if it ranks strictly higher
+//     (long_sleep outranks every other type; then longer total_sleep_duration; `deleted`
+//     loses to everything; a tie between two different documents changes nothing);
+//   - a changed revision of the SAME document (same Oura id) always replaces it.
+// Every other kind: the WHERE is false, so behaviour is still first-write-wins.
+// Parameters: ?1 kind, ?2 recorded_at (ms), ?3 received_at (ms), ?4 payload (JSON text).
+const sleepRank = (p: string) => `(CASE
+    WHEN NOT json_valid(${p}) THEN -2
+    WHEN json_extract(${p}, '$.type') = 'deleted' THEN -1
+    ELSE (CASE WHEN json_extract(${p}, '$.type') = 'long_sleep' THEN 1000000000 ELSE 0 END)
+         + MIN(MAX(COALESCE(CAST(json_extract(${p}, '$.total_sleep_duration') AS INTEGER), 0), 0), 999999999)
+  END)`;
+
+export const OURA_UPSERT_SQL = `INSERT INTO readings (source, kind, recorded_at, received_at, payload)
+VALUES ('oura', ?1, ?2, ?3, ?4)
+ON CONFLICT(source, kind, recorded_at) DO UPDATE SET
+  payload = excluded.payload,
+  received_at = excluded.received_at
+WHERE readings.kind = 'sleep'
+  AND (CASE
+    WHEN NOT json_valid(excluded.payload) THEN 0
+    WHEN ${sleepRank("excluded.payload")} > ${sleepRank("readings.payload")} THEN 1
+    WHEN NOT json_valid(readings.payload) THEN 0
+    WHEN json_extract(excluded.payload, '$.id') IS NOT NULL
+     AND json_extract(excluded.payload, '$.id') = json_extract(readings.payload, '$.id')
+     AND excluded.payload <> readings.payload THEN 1
+    ELSE 0
+  END) = 1`;
+
 function fmtDate(d: Date): string {
   return d.toISOString().slice(0, 10); // YYYY-MM-DD
 }
@@ -288,17 +323,14 @@ export async function ingestRange(
       if (items.length === 0) continue;
       result.kinds.push(kind);
 
-      // Batch insert with ON CONFLICT IGNORE
-      const stmt = db.prepare(
-        `INSERT INTO readings (source, kind, recorded_at, received_at, payload)
-         VALUES ('oura', ?1, ?2, ?3, ?4)
-         ON CONFLICT(source, kind, recorded_at) DO NOTHING`,
-      );
+      // Batch upsert: every kind except `sleep` keeps first-write-wins; see OURA_UPSERT_SQL.
+      const stmt = db.prepare(OURA_UPSERT_SQL);
       const batch = items.map((item) =>
         stmt.bind(kind, recordedAtFromItem(kind, item), now, JSON.stringify(item)),
       );
       const results = await db.batch(batch);
       for (const r of results) {
+        // Counts new rows and, for `sleep`, rows replaced by a better or revised document.
         if (r.meta?.changes && r.meta.changes > 0) result.rowsAdded += r.meta.changes;
       }
     } catch (e) {

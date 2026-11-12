@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",
+    "test": "bun test",
     "dev": "wrangler dev",
     "db:apply": "wrangler d1 execute pulse-health-db --remote --file=shared/schema.sql",
     "db:migrate": "wrangler d1 migrations apply pulse-health-db --remote",
