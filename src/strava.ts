@@ -13,7 +13,7 @@ const SCOPES = ["read", "activity:read_all", "profile:read_all"].join(",");
 interface StravaToken {
   access_token: string;
   refresh_token: string;
-  expires_at: number;        // SECONDS since epoch (unlike Oura's expires_in)
+  expires_at: number; // SECONDS since epoch (unlike Oura's expires_in)
   expires_in?: number;
   token_type: string;
   scope?: string;
@@ -27,7 +27,11 @@ interface IngestResult {
   errors: string[];
 }
 
-export function authorizeUrl(clientId: string, redirectUri: string, state: string): string {
+export function authorizeUrl(
+  clientId: string,
+  redirectUri: string,
+  state: string,
+): string {
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
@@ -58,7 +62,9 @@ export async function exchangeCode(
   const text = await res.text();
   if (!res.ok) {
     console.log("strava.exchangeCode FAIL", { status: res.status, body: text });
-    throw new Error(`Strava token exchange failed: ${res.status} ${text.slice(0, 600)}`);
+    throw new Error(
+      `Strava token exchange failed: ${res.status} ${text.slice(0, 600)}`,
+    );
   }
   return JSON.parse(text) as StravaToken;
 }
@@ -81,13 +87,21 @@ export async function refreshAccessToken(
   });
   const text = await res.text();
   if (!res.ok) {
-    console.log("strava.refreshAccessToken FAIL", { status: res.status, body: text });
-    throw new Error(`Strava token refresh failed: ${res.status} ${text.slice(0, 600)}`);
+    console.log("strava.refreshAccessToken FAIL", {
+      status: res.status,
+      body: text,
+    });
+    throw new Error(
+      `Strava token refresh failed: ${res.status} ${text.slice(0, 600)}`,
+    );
   }
   return JSON.parse(text) as StravaToken;
 }
 
-export async function storeToken(db: D1Database, token: StravaToken): Promise<void> {
+export async function storeToken(
+  db: D1Database,
+  token: StravaToken,
+): Promise<void> {
   const now = Date.now();
   // Strava's expires_at is in SECONDS — convert to ms for our schema.
   const expiresAtMs = token.expires_at * 1000;
@@ -102,7 +116,13 @@ export async function storeToken(db: D1Database, token: StravaToken): Promise<vo
          scopes = excluded.scopes,
          updated_at = excluded.updated_at`,
     )
-    .bind(token.access_token, token.refresh_token, expiresAtMs, token.scope ?? null, now)
+    .bind(
+      token.access_token,
+      token.refresh_token,
+      expiresAtMs,
+      token.scope ?? null,
+      now,
+    )
     .run();
 }
 
@@ -118,13 +138,19 @@ export async function getValidAccessToken(
   clientSecret: string,
 ): Promise<string | null> {
   const row = await db
-    .prepare("SELECT access_token, refresh_token, expires_at FROM tokens WHERE source = 'strava'")
+    .prepare(
+      "SELECT access_token, refresh_token, expires_at FROM tokens WHERE source = 'strava'",
+    )
     .first<StoredToken>();
   if (!row) return null;
   if (row.expires_at - Date.now() > REFRESH_THRESHOLD_MS) {
     return row.access_token;
   }
-  const refreshed = await refreshAccessToken(row.refresh_token, clientId, clientSecret);
+  const refreshed = await refreshAccessToken(
+    row.refresh_token,
+    clientId,
+    clientSecret,
+  );
   await storeToken(db, refreshed);
   return refreshed.access_token;
 }
@@ -132,7 +158,7 @@ export async function getValidAccessToken(
 interface StravaActivity {
   id: number;
   name: string;
-  start_date: string;        // ISO UTC
+  start_date: string; // ISO UTC
   start_date_local: string;
   type: string;
   sport_type?: string;
@@ -144,24 +170,31 @@ async function fetchAthlete(token: string): Promise<unknown> {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
-    throw new Error(`Strava /athlete ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    throw new Error(
+      `Strava /athlete ${res.status}: ${(await res.text()).slice(0, 300)}`,
+    );
   }
   return res.json();
 }
 
-async function fetchAthleteStats(token: string, athleteId: number): Promise<unknown> {
+async function fetchAthleteStats(
+  token: string,
+  athleteId: number,
+): Promise<unknown> {
   const res = await fetch(`${API_BASE}/athletes/${athleteId}/stats`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
-    throw new Error(`Strava /athletes/{id}/stats ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    throw new Error(
+      `Strava /athletes/{id}/stats ${res.status}: ${(await res.text()).slice(0, 300)}`,
+    );
   }
   return res.json();
 }
 
 async function fetchActivitiesPaged(
   token: string,
-  after?: number,            // epoch seconds
+  after?: number, // epoch seconds
   perPage = 200,
 ): Promise<StravaActivity[]> {
   const items: StravaActivity[] = [];
@@ -176,7 +209,9 @@ async function fetchActivitiesPaged(
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {
-      throw new Error(`Strava /athlete/activities ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      throw new Error(
+        `Strava /athlete/activities ${res.status}: ${(await res.text()).slice(0, 300)}`,
+      );
     }
     const batch = (await res.json()) as StravaActivity[];
     if (batch.length === 0) break;
@@ -193,9 +228,16 @@ export async function ingest(
   token: string,
   sinceDays?: number,
 ): Promise<IngestResult> {
-  const result: IngestResult = { rowsAdded: 0, rowsSeen: 0, kinds: [], errors: [] };
+  const result: IngestResult = {
+    rowsAdded: 0,
+    rowsSeen: 0,
+    kinds: [],
+    errors: [],
+  };
   const now = Date.now();
-  const after = sinceDays ? Math.floor((now - sinceDays * 24 * 3600 * 1000) / 1000) : undefined;
+  const after = sinceDays
+    ? Math.floor((now - sinceDays * 24 * 3600 * 1000) / 1000)
+    : undefined;
 
   // 1. Athlete profile
   try {
@@ -252,7 +294,8 @@ export async function ingest(
         const slice = batch.slice(i, i + 100);
         const results = await db.batch(slice);
         for (const r of results) {
-          if (r.meta?.changes && r.meta.changes > 0) result.rowsAdded += r.meta.changes;
+          if (r.meta?.changes && r.meta.changes > 0)
+            result.rowsAdded += r.meta.changes;
         }
       }
     }

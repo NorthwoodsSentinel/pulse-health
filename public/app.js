@@ -19,14 +19,18 @@ function fmtAgo(ms) {
 function fmtDate(iso) {
   if (!iso) return "—";
   return new Date(iso).toLocaleString(undefined, {
-    weekday: "short", month: "short", day: "numeric",
-    hour: "numeric", minute: "2-digit",
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
   });
 }
 
 function fmtDuration(s) {
   if (!s) return "—";
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  const h = Math.floor(s / 3600),
+    m = Math.floor((s % 3600) / 60);
   return h ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
 }
 
@@ -58,14 +62,16 @@ async function loadDigest() {
     renderStrava(data.strava);
     $("last-updated").textContent = `updated ${fmtAgo(data.generated_at)}`;
   } catch (e) {
-    $("oura-content").innerHTML = `<div class="skeleton">load failed: ${e.message}</div>`;
+    $("oura-content").innerHTML =
+      `<div class="skeleton">load failed: ${e.message}</div>`;
     $("strava-content").innerHTML = "";
   }
 }
 
 function renderOura(o) {
   if (!o || (o.sleep_score == null && o.readiness_score == null)) {
-    $("oura-content").innerHTML = `<div class="skeleton">no Oura data yet</div>`;
+    $("oura-content").innerHTML =
+      `<div class="skeleton">no Oura data yet</div>`;
     $("oura-stamp").textContent = "";
     return;
   }
@@ -97,7 +103,10 @@ function renderOura(o) {
 function renderContributors(c, label) {
   const entries = Object.entries(c).sort((a, b) => a[1] - b[1]);
   const pills = entries
-    .map(([k, v]) => `<span class="ch">${k.replaceAll("_", " ")}<b>${v}</b></span>`)
+    .map(
+      ([k, v]) =>
+        `<span class="ch">${k.replaceAll("_", " ")}<b>${v}</b></span>`,
+    )
     .join("");
   return `
     <details style="margin-top:8px;">
@@ -108,7 +117,8 @@ function renderContributors(c, label) {
 
 function renderStrava(s) {
   if (!s) {
-    $("strava-content").innerHTML = `<div class="skeleton">no Strava activity yet</div>`;
+    $("strava-content").innerHTML =
+      `<div class="skeleton">no Strava activity yet</div>`;
     $("strava-stamp").textContent = "";
     return;
   }
@@ -128,8 +138,13 @@ function renderStrava(s) {
 }
 
 function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+  return String(s ?? "").replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ],
+  );
 }
 
 // ---------- push subscription ----------
@@ -147,11 +162,17 @@ function bufToB64url(buf) {
   const bytes = new Uint8Array(buf);
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  return btoa(bin)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
 }
 
 async function bootPush() {
-  const permEl = $("perm-pill"), swEl = $("sw-pill"), subEl = $("sub-pill"), btn = $("subscribe-btn");
+  const permEl = $("perm-pill"),
+    swEl = $("sw-pill"),
+    subEl = $("sub-pill"),
+    btn = $("subscribe-btn");
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
     pill(swEl, "bad", "unsupported");
     btn.textContent = "Push not supported";
@@ -160,27 +181,47 @@ async function bootPush() {
   const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
   await navigator.serviceWorker.ready;
   pill(swEl, "good", "registered");
-  pill(permEl, Notification.permission === "granted" ? "good" : Notification.permission === "denied" ? "bad" : "warn", Notification.permission);
+  pill(
+    permEl,
+    Notification.permission === "granted"
+      ? "good"
+      : Notification.permission === "denied"
+        ? "bad"
+        : "warn",
+    Notification.permission,
+  );
   const sub = await reg.pushManager.getSubscription();
   if (sub) {
     pill(subEl, "good", "subscribed");
     btn.textContent = "Re-subscribe";
   } else {
     pill(subEl, "warn", "not yet");
-    btn.textContent = Notification.permission === "granted" ? "Subscribe" : "Allow + subscribe";
+    btn.textContent =
+      Notification.permission === "granted" ? "Subscribe" : "Allow + subscribe";
   }
   btn.disabled = false;
   btn.addEventListener("click", () => subscribe(reg));
 }
 
 async function subscribe(reg) {
-  const btn = $("subscribe-btn"), permEl = $("perm-pill"), subEl = $("sub-pill");
-  btn.disabled = true; btn.textContent = "Working…";
+  const btn = $("subscribe-btn"),
+    permEl = $("perm-pill"),
+    subEl = $("sub-pill");
+  btn.disabled = true;
+  btn.textContent = "Working…";
   try {
     if (Notification.permission !== "granted") {
       const result = await Notification.requestPermission();
-      pill(permEl, result === "granted" ? "good" : result === "denied" ? "bad" : "warn", result);
-      if (result !== "granted") { btn.textContent = "Permission denied"; btn.disabled = false; return; }
+      pill(
+        permEl,
+        result === "granted" ? "good" : result === "denied" ? "bad" : "warn",
+        result,
+      );
+      if (result !== "granted") {
+        btn.textContent = "Permission denied";
+        btn.disabled = false;
+        return;
+      }
     }
     const r = await fetch("/api/vapid-public-key");
     const { key } = await r.json();
@@ -195,14 +236,17 @@ async function subscribe(reg) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         endpoint: sub.endpoint,
-        keys: { p256dh: bufToB64url(sub.getKey("p256dh")), auth: bufToB64url(sub.getKey("auth")) },
+        keys: {
+          p256dh: bufToB64url(sub.getKey("p256dh")),
+          auth: bufToB64url(sub.getKey("auth")),
+        },
         userAgent: navigator.userAgent,
       }),
     });
     pill(subEl, "good", "subscribed");
     btn.textContent = "Re-subscribe";
     btn.disabled = false;
-  } catch (e) {
+  } catch {
     btn.textContent = "Retry";
     btn.disabled = false;
   }
