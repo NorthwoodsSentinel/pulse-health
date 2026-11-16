@@ -61,10 +61,20 @@ function stravaRedirectUri(req: Request): string {
   return `${new URL(req.url).origin}/api/strava/callback`;
 }
 
-async function pushAll(env: Env, title: string, body: string, url = "/"): Promise<number> {
+async function pushAll(
+  env: Env,
+  title: string,
+  body: string,
+  url = "/",
+): Promise<number> {
   const subs = await env.DB.prepare(
     "SELECT id, endpoint, p256dh_key, auth_secret FROM subscriptions WHERE active = 1",
-  ).all<{ id: number; endpoint: string; p256dh_key: string; auth_secret: string }>();
+  ).all<{
+    id: number;
+    endpoint: string;
+    p256dh_key: string;
+    auth_secret: string;
+  }>();
   let delivered = 0;
   for (const sub of subs.results ?? []) {
     const payload = JSON.stringify({ title, body, url });
@@ -91,7 +101,11 @@ async function pushAll(env: Env, title: string, body: string, url = "/"): Promis
 }
 
 export default {
-  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(
+    req: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method;
@@ -107,7 +121,11 @@ export default {
     }
 
     if (path === "/api/subscribe" && method === "POST") {
-      let body: { endpoint?: string; keys?: { p256dh?: string; auth?: string }; userAgent?: string };
+      let body: {
+        endpoint?: string;
+        keys?: { p256dh?: string; auth?: string };
+        userAgent?: string;
+      };
       try {
         body = await req.json();
       } catch {
@@ -148,14 +166,23 @@ export default {
     if (path === "/api/test-push" && method === "POST") {
       const denied = requireAdmin(req, env);
       if (denied) return denied;
-      const body = (await req.json().catch(() => ({}))) as { title?: string; body?: string; url?: string };
+      const body = (await req.json().catch(() => ({}))) as {
+        title?: string;
+        body?: string;
+        url?: string;
+      };
       // url: where a tap on the notification lands. Default "/" (this app's Oura page); fleet callers pass their own
       // surface (rob-board) so a "Workers errors" page never opens HRV data (Rob 2026-08-18).
       const delivered = await pushAll(
         env,
         body.title ?? "pulse-health",
         body.body ?? `Test push — ${new Date().toLocaleString()}`,
-        typeof body.url === "string" && /^https:\/\/[a-z0-9.-]+\.robert-chuvala\.workers\.dev\//.test(body.url) ? body.url : "/",
+        typeof body.url === "string" &&
+          /^https:\/\/[a-z0-9.-]+\.robert-chuvala\.workers\.dev\//.test(
+            body.url,
+          )
+          ? body.url
+          : "/",
       );
       return json({ delivered });
     }
@@ -172,7 +199,12 @@ export default {
       )
         .bind(state, verifier, Date.now())
         .run();
-      const redirect = oura.authorizeUrl(env.OURA_CLIENT_ID, ouraRedirectUri(req), state, challenge);
+      const redirect = oura.authorizeUrl(
+        env.OURA_CLIENT_ID,
+        ouraRedirectUri(req),
+        state,
+        challenge,
+      );
       return Response.redirect(redirect, 302);
     }
 
@@ -181,7 +213,9 @@ export default {
       const state = url.searchParams.get("state");
       const error = url.searchParams.get("error");
       if (error) {
-        return new Response(`Oura authorization failed: ${error}`, { status: 400 });
+        return new Response(`Oura authorization failed: ${error}`, {
+          status: 400,
+        });
       }
       if (!code || !state) {
         return new Response("Missing code or state", { status: 400 });
@@ -197,9 +231,13 @@ export default {
         .bind(state)
         .first<{ code_verifier: string }>();
       if (!pending) {
-        return new Response("PKCE verifier not found for this state", { status: 400 });
+        return new Response("PKCE verifier not found for this state", {
+          status: 400,
+        });
       }
-      await env.DB.prepare(`DELETE FROM oauth_pending WHERE state = ?1`).bind(state).run();
+      await env.DB.prepare(`DELETE FROM oauth_pending WHERE state = ?1`)
+        .bind(state)
+        .run();
 
       try {
         const token = await oura.exchangeCode(
@@ -215,7 +253,12 @@ export default {
         const startedAt = Date.now();
         const end = new Date();
         const start = new Date(end.getTime() - 30 * 24 * 3600 * 1000);
-        const result = await oura.ingestRange(env.DB, token.access_token, start, end);
+        const result = await oura.ingestRange(
+          env.DB,
+          token.access_token,
+          start,
+          end,
+        );
 
         await env.DB.prepare(
           `INSERT INTO ingest_log (source, started_at, finished_at, kinds, rows_added, rows_seen, status, trigger, error)
@@ -251,9 +294,12 @@ export default {
           { headers: { "content-type": "text/html; charset=utf-8" } },
         );
       } catch (e) {
-        return new Response(`Token exchange or initial ingest failed: ${(e as Error).message}`, {
-          status: 500,
-        });
+        return new Response(
+          `Token exchange or initial ingest failed: ${(e as Error).message}`,
+          {
+            status: 500,
+          },
+        );
       }
     }
 
@@ -267,7 +313,11 @@ export default {
         env.OURA_CLIENT_ID,
         env.OURA_CLIENT_SECRET,
       );
-      if (!access) return json({ error: "no oura token; visit /api/oura/connect first" }, 400);
+      if (!access)
+        return json(
+          { error: "no oura token; visit /api/oura/connect first" },
+          400,
+        );
       const startedAt = Date.now();
       const end = new Date();
       const start = new Date(end.getTime() - days * 24 * 3600 * 1000);
@@ -297,11 +347,19 @@ export default {
     // Drift watcher (2026-08-15): Rob's FLOW_ALIGNMENT signals from data already here.
     if (path === "/api/drift" && method === "GET") {
       const report = await drift.evaluateDrift(env.DB);
-      return json({ source: "pulse-health", drift: report, would_push: drift.driftMessage(report) });
+      return json({
+        source: "pulse-health",
+        drift: report,
+        would_push: drift.driftMessage(report),
+      });
     }
 
     if (path === "/api/drift/log" && method === "GET") {
-      const rows = await env.DB.prepare(`SELECT at, verdict, fired, pushed FROM drift_log ORDER BY at DESC LIMIT 14`).all().catch(() => ({ results: [] }));
+      const rows = await env.DB.prepare(
+        `SELECT at, verdict, fired, pushed FROM drift_log ORDER BY at DESC LIMIT 14`,
+      )
+        .all()
+        .catch(() => ({ results: [] }));
       return json({ source: "pulse-health", drift_log: rows.results || [] });
     }
 
@@ -314,7 +372,11 @@ export default {
 
     if (path === "/api/strava/connect" && method === "GET") {
       const state = await signState("strava", env.ADMIN_TOKEN);
-      const redirect = strava.authorizeUrl(env.STRAVA_CLIENT_ID, stravaRedirectUri(req), state);
+      const redirect = strava.authorizeUrl(
+        env.STRAVA_CLIENT_ID,
+        stravaRedirectUri(req),
+        state,
+      );
       return Response.redirect(redirect, 302);
     }
 
@@ -323,16 +385,23 @@ export default {
       const state = url.searchParams.get("state");
       const error = url.searchParams.get("error");
       if (error) {
-        return new Response(`Strava authorization failed: ${error}`, { status: 400 });
+        return new Response(`Strava authorization failed: ${error}`, {
+          status: 400,
+        });
       }
       if (!code || !state) {
         return new Response("Missing code or state", { status: 400 });
       }
       const valid = await verifyState(state, "strava", env.ADMIN_TOKEN);
-      if (!valid) return new Response("Invalid or expired state", { status: 400 });
+      if (!valid)
+        return new Response("Invalid or expired state", { status: 400 });
 
       try {
-        const token = await strava.exchangeCode(code, env.STRAVA_CLIENT_ID, env.STRAVA_CLIENT_SECRET);
+        const token = await strava.exchangeCode(
+          code,
+          env.STRAVA_CLIENT_ID,
+          env.STRAVA_CLIENT_SECRET,
+        );
         await strava.storeToken(env.DB, token);
 
         const startedAt = Date.now();
@@ -372,9 +441,12 @@ export default {
           { headers: { "content-type": "text/html; charset=utf-8" } },
         );
       } catch (e) {
-        return new Response(`Strava token exchange or initial ingest failed: ${(e as Error).message}`, {
-          status: 500,
-        });
+        return new Response(
+          `Strava token exchange or initial ingest failed: ${(e as Error).message}`,
+          {
+            status: 500,
+          },
+        );
       }
     }
 
@@ -387,7 +459,11 @@ export default {
         env.STRAVA_CLIENT_ID,
         env.STRAVA_CLIENT_SECRET,
       );
-      if (!access) return json({ error: "no strava token; visit /api/strava/connect first" }, 400);
+      if (!access)
+        return json(
+          { error: "no strava token; visit /api/strava/connect first" },
+          400,
+        );
       const startedAt = Date.now();
       const result = await strava.ingest(env.DB, access, body.days);
       await env.DB.prepare(
@@ -423,10 +499,14 @@ export default {
          LIMIT 12`,
       ).all<{ kind: string; payload: string; recorded_at: number }>();
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- an Oura API JSON payload, read field by field; no schema is enforced here
       const byKind: Record<string, { payload: any; recorded_at: number }> = {};
       for (const r of ouraRow.results ?? []) {
         if (!byKind[r.kind]) {
-          byKind[r.kind] = { payload: JSON.parse(r.payload), recorded_at: r.recorded_at };
+          byKind[r.kind] = {
+            payload: JSON.parse(r.payload),
+            recorded_at: r.recorded_at,
+          };
         }
       }
 
@@ -484,7 +564,11 @@ export default {
   },
 
   // Daily cron — Oura + Strava sequentially.
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(
+    _event: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<void> {
     ctx.waitUntil(
       (async () => {
         // ----- Oura -----
@@ -529,7 +613,14 @@ export default {
               `INSERT INTO ingest_log (source, started_at, finished_at, kinds, rows_added, rows_seen, status, trigger, error)
                VALUES ('oura', ?1, ?2, ?3, ?4, 0, ?5, 'cron', ?6)`,
             )
-              .bind(startedAt, Date.now(), kindsList, rowsAdded, status, errorMsg)
+              .bind(
+                startedAt,
+                Date.now(),
+                kindsList,
+                rowsAdded,
+                status,
+                errorMsg,
+              )
               .run();
           }
 
@@ -547,7 +638,9 @@ export default {
           const fresh = await oura.feedFreshness(env.DB);
           if (fresh.stale) {
             const ageTxt =
-              fresh.ingest_age_hours === null ? "never" : `${Math.round(fresh.ingest_age_hours)}h ago`;
+              fresh.ingest_age_hours === null
+                ? "never"
+                : `${Math.round(fresh.ingest_age_hours)}h ago`;
             alerts.push(
               `Pulse-health feed STALE — last successful ingest ${ageTxt}. Brief is serving frozen data; re-auth at /api/oura/connect`,
             );
@@ -596,7 +689,15 @@ export default {
               `INSERT INTO ingest_log (source, started_at, finished_at, kinds, rows_added, rows_seen, status, trigger, error)
                VALUES ('strava', ?1, ?2, ?3, ?4, ?5, ?6, 'cron', ?7)`,
             )
-              .bind(startedAt, Date.now(), kindsList, rowsAdded, rowsSeen, status, errorMsg)
+              .bind(
+                startedAt,
+                Date.now(),
+                kindsList,
+                rowsAdded,
+                rowsSeen,
+                status,
+                errorMsg,
+              )
               .run();
           }
         }
@@ -614,17 +715,42 @@ export default {
             const n = await pushAll(env, msg.title, msg.body, "/");
             pushed = n > 0; // pushAll returns successful deliveries; 0 = no live subscription = NOT delivered
             // Also mirror to the fleet ntfy topic so CeeCee's estate sees the same signal.
-            await fetch("https://ntfy.sh/fleet-watch", { method: "POST", headers: { Title: `health: ${msg.title}`, Priority: "3", Tags: "bike,leaves" }, body: msg.body }).catch(() => {});
+            await fetch("https://ntfy.sh/fleet-watch", {
+              method: "POST",
+              headers: {
+                Title: `health: ${msg.title}`,
+                Priority: "3",
+                Tags: "bike,leaves",
+              },
+              body: msg.body,
+            }).catch(() => {});
           }
           await drift.logDrift(env.DB, report, pushed);
         } catch (e) {
           // FAIL LOUD on an INDEPENDENT channel (ntfy), not only the push channel under test,
           // and leave a row so /api/drift/log shows the failure instead of silence.
           const msg = `Drift watcher FAILED: ${(e as Error).message}`;
-          await fetch("https://ntfy.sh/fleet-watch", { method: "POST", headers: { Title: "health drift watcher FAILED", Priority: "4", Tags: "rotating_light" }, body: msg }).catch(() => {});
+          await fetch("https://ntfy.sh/fleet-watch", {
+            method: "POST",
+            headers: {
+              Title: "health drift watcher FAILED",
+              Priority: "4",
+              Tags: "rotating_light",
+            },
+            body: msg,
+          }).catch(() => {});
           await pushAll(env, "Drift watcher FAILED", msg).catch(() => {});
-          await env.DB.prepare(`CREATE TABLE IF NOT EXISTS drift_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, verdict TEXT NOT NULL, fired INTEGER NOT NULL, report TEXT NOT NULL, pushed INTEGER NOT NULL)`).run().catch(() => {});
-          await env.DB.prepare(`INSERT INTO drift_log (at, verdict, fired, report, pushed) VALUES (?1, 'error', -1, ?2, 0)`).bind(Date.now(), JSON.stringify({ error: msg })).run().catch(() => {});
+          await env.DB.prepare(
+            `CREATE TABLE IF NOT EXISTS drift_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, verdict TEXT NOT NULL, fired INTEGER NOT NULL, report TEXT NOT NULL, pushed INTEGER NOT NULL)`,
+          )
+            .run()
+            .catch(() => {});
+          await env.DB.prepare(
+            `INSERT INTO drift_log (at, verdict, fired, report, pushed) VALUES (?1, 'error', -1, ?2, 0)`,
+          )
+            .bind(Date.now(), JSON.stringify({ error: msg }))
+            .run()
+            .catch(() => {});
         }
       })(),
     );

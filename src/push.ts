@@ -3,14 +3,14 @@
 
 interface Subscription {
   endpoint: string;
-  p256dh_key: string;  // base64url, uncompressed P-256 public key
+  p256dh_key: string; // base64url, uncompressed P-256 public key
   auth_secret: string; // base64url, 16 bytes
 }
 
 interface VapidKeys {
-  publicKey: string;   // base64url
-  privateKey: string;  // base64url raw 32-byte scalar
-  subject: string;     // "mailto:..."
+  publicKey: string; // base64url
+  privateKey: string; // base64url raw 32-byte scalar
+  subject: string; // "mailto:..."
 }
 
 interface PushResult {
@@ -33,7 +33,10 @@ function b64urlEncode(buf: ArrayBuffer | Uint8Array): string {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  return btoa(bin)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
 }
 
 function concat(...arrays: Uint8Array[]): Uint8Array {
@@ -49,7 +52,10 @@ function concat(...arrays: Uint8Array[]): Uint8Array {
 
 // ---------- VAPID JWT (ES256) ----------
 
-async function importVapidPrivate(privateB64: string, publicB64: string): Promise<CryptoKey> {
+async function importVapidPrivate(
+  privateB64: string,
+  publicB64: string,
+): Promise<CryptoKey> {
   const d = privateB64;
   const raw = b64urlDecode(publicB64); // 0x04 || X(32) || Y(32)
   if (raw.length !== 65 || raw[0] !== 0x04) {
@@ -72,8 +78,12 @@ async function vapidJwt(endpoint: string, keys: VapidKeys): Promise<string> {
   const header = { typ: "JWT", alg: "ES256" };
   const exp = Math.floor(Date.now() / 1000) + 12 * 3600;
   const claims = { aud: origin, exp, sub: keys.subject };
-  const encHeader = b64urlEncode(new TextEncoder().encode(JSON.stringify(header)));
-  const encClaims = b64urlEncode(new TextEncoder().encode(JSON.stringify(claims)));
+  const encHeader = b64urlEncode(
+    new TextEncoder().encode(JSON.stringify(header)),
+  );
+  const encClaims = b64urlEncode(
+    new TextEncoder().encode(JSON.stringify(claims)),
+  );
   const signingInput = `${encHeader}.${encClaims}`;
   const privKey = await importVapidPrivate(keys.privateKey, keys.publicKey);
   const sig = await crypto.subtle.sign(
@@ -92,11 +102,21 @@ async function hkdf(
   info: Uint8Array,
   length: number,
 ): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey("raw", ikm, { name: "HKDF" }, false, [
-    "deriveBits",
-  ]);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    ikm as BufferSource, // a Uint8Array is a BufferSource; the newer lib types need the cast
+    { name: "HKDF" },
+    false,
+    ["deriveBits"],
+  );
   const bits = await crypto.subtle.deriveBits(
-    { name: "HKDF", hash: "SHA-256", salt, info },
+    // TS 5.9 types Uint8Array<ArrayBufferLike>; the values are BufferSources.
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: salt as BufferSource,
+      info: info as BufferSource,
+    },
     key,
     length * 8,
   );
@@ -107,8 +127,8 @@ async function hkdf(
 
 async function encryptPayload(
   plaintext: Uint8Array,
-  ua_public: Uint8Array,    // recipient p256dh, uncompressed (65 bytes)
-  auth_secret: Uint8Array,  // recipient auth secret (16 bytes)
+  ua_public: Uint8Array, // recipient p256dh, uncompressed (65 bytes)
+  auth_secret: Uint8Array, // recipient auth secret (16 bytes)
 ): Promise<{ body: Uint8Array; salt: Uint8Array; localPublic: Uint8Array }> {
   // Ephemeral local ECDH keypair.
   const local = await crypto.subtle.generateKey(
@@ -116,12 +136,14 @@ async function encryptPayload(
     true,
     ["deriveBits"],
   );
-  const localPubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", local.publicKey));
+  const localPubRaw = new Uint8Array(
+    await crypto.subtle.exportKey("raw", local.publicKey),
+  );
 
   // Shared secret via ECDH with recipient's public key.
   const uaKey = await crypto.subtle.importKey(
     "raw",
-    ua_public,
+    ua_public as BufferSource, // TS 5.9 types Uint8Array<ArrayBufferLike>; the value is a BufferSource
     { name: "ECDH", namedCurve: "P-256" },
     false,
     [],
@@ -161,11 +183,20 @@ async function encryptPayload(
   // Plaintext padding: append 0x02 (last record marker), no extra padding bytes.
   const padded = concat(plaintext, new Uint8Array([0x02]));
 
-  const aesKey = await crypto.subtle.importKey("raw", cek, { name: "AES-GCM" }, false, [
-    "encrypt",
-  ]);
+  const aesKey = await crypto.subtle.importKey(
+    "raw",
+    cek as BufferSource, // TS 5.9 types Uint8Array<ArrayBufferLike>; the value is a BufferSource
+    { name: "AES-GCM" },
+    false,
+    ["encrypt"],
+  );
   const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, aesKey, padded),
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce as BufferSource },
+      // TS 5.9 types Uint8Array<ArrayBufferLike>; the value is a BufferSource
+      aesKey,
+      padded as BufferSource,
+    ),
   );
 
   // Assemble aes128gcm content-encoding header:
@@ -197,11 +228,11 @@ export async function sendPush(
       headers: {
         "Content-Encoding": "aes128gcm",
         "Content-Type": "application/octet-stream",
-        "TTL": "60",
-        "Urgency": "normal",
-        "Authorization": `vapid t=${jwt}, k=${keys.publicKey}`,
+        TTL: "60",
+        Urgency: "normal",
+        Authorization: `vapid t=${jwt}, k=${keys.publicKey}`,
       },
-      body,
+      body: body as BodyInit, // TS 5.9 types Uint8Array<ArrayBufferLike>; the value is a valid body
     });
 
     if (res.ok) {

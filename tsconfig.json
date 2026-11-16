@@ -1,4 +1,9 @@
 {
+  // The one typecheck project. `include` is the whole tree, so a new
+  // TypeScript file anywhere (source, shared, test or config) is typechecked
+  // with no edit here; the lint config names this project as its parser
+  // project, so a `.ts` file outside it also fails lint. The compiler options
+  // are the repo's own, unchanged.
   "compilerOptions": {
     "target": "ES2022",
     "module": "ES2022",
@@ -12,5 +17,6 @@
     "isolatedModules": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts", "shared/**/*.ts"]
+  "include": ["**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
+  "exclude": ["node_modules", ".wrangler", "dist", "coverage", ".scratch"]
 }

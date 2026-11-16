@@ -44,7 +44,7 @@ const FETCHED_KINDS = [
 interface OuraToken {
   access_token: string;
   refresh_token: string;
-  expires_in: number;   // seconds
+  expires_in: number; // seconds
   token_type: string;
   scope?: string;
 }
@@ -60,7 +60,10 @@ function b64url(bytes: Uint8Array | ArrayBuffer): string {
   const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   let bin = "";
   for (const b of arr) bin += String.fromCharCode(b);
-  return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  return btoa(bin)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
 }
 
 // PKCE verifier: 32 random bytes → 43-char base64url string (RFC 7636 §4.1).
@@ -70,7 +73,10 @@ export function generateCodeVerifier(): string {
 
 // S256 code challenge: base64url(SHA-256(verifier)).
 export async function deriveCodeChallenge(verifier: string): Promise<string> {
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  const hash = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(verifier),
+  );
   return b64url(hash);
 }
 
@@ -129,7 +135,9 @@ export async function exchangeCode(
         code_verifier_len: codeVerifier.length,
       },
     });
-    throw new Error(`Oura token exchange failed: ${res.status} ${text.slice(0, 800)}`);
+    throw new Error(
+      `Oura token exchange failed: ${res.status} ${text.slice(0, 800)}`,
+    );
   }
   // Log the EXACT shape of Oura's success response so we know what fields they return.
   // Redact actual token values; keep token_type, expires_in, scope, and the key names present.
@@ -140,11 +148,22 @@ export async function exchangeCode(
       token_type: parsed.token_type,
       expires_in: parsed.expires_in,
       scope: parsed.scope,
-      access_token_len: typeof parsed.access_token === "string" ? parsed.access_token.length : null,
-      refresh_token_len: typeof parsed.refresh_token === "string" ? parsed.refresh_token.length : null,
-      access_token_prefix: typeof parsed.access_token === "string" ? parsed.access_token.slice(0, 8) : null,
+      access_token_len:
+        typeof parsed.access_token === "string"
+          ? parsed.access_token.length
+          : null,
+      refresh_token_len:
+        typeof parsed.refresh_token === "string"
+          ? parsed.refresh_token.length
+          : null,
+      access_token_prefix:
+        typeof parsed.access_token === "string"
+          ? parsed.access_token.slice(0, 8)
+          : null,
     });
-  } catch {}
+  } catch {
+    // A body that is not JSON is not logged here; the parse below throws on it.
+  }
   return JSON.parse(text) as OuraToken;
 }
 
@@ -166,8 +185,13 @@ export async function refreshAccessToken(
   });
   const text = await res.text();
   if (!res.ok) {
-    console.log("oura.refreshAccessToken FAIL", { status: res.status, body: text });
-    throw new Error(`Oura token refresh failed: ${res.status} ${text.slice(0, 800)}`);
+    console.log("oura.refreshAccessToken FAIL", {
+      status: res.status,
+      body: text,
+    });
+    throw new Error(
+      `Oura token refresh failed: ${res.status} ${text.slice(0, 800)}`,
+    );
   }
   return JSON.parse(text) as OuraToken;
 }
@@ -219,7 +243,11 @@ export async function getValidAccessToken(
     return row.access_token;
   }
   // Refresh.
-  const refreshed = await refreshAccessToken(row.refresh_token, clientId, clientSecret);
+  const refreshed = await refreshAccessToken(
+    row.refresh_token,
+    clientId,
+    clientSecret,
+  );
   await storeToken(db, refreshed);
   return refreshed.access_token;
 }
@@ -246,13 +274,17 @@ async function fetchPaged(
       const t = await res.text().catch(() => "");
       throw new Error(`Oura ${endpoint} ${res.status}: ${t.slice(0, 300)}`);
     }
-    const body = (await res.json()) as { data?: unknown[]; next_token?: string | null };
+    const body = (await res.json()) as {
+      data?: unknown[];
+      next_token?: string | null;
+    };
     items.push(...(body.data ?? []));
     nextToken = body.next_token ?? null;
   } while (nextToken);
   return items;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- an Oura API JSON payload, read field by field; no schema is enforced here
 function recordedAtFromItem(kind: string, item: any): number {
   // Oura returns ISO timestamps in different fields per kind.
   // daily_*: { day: "2026-06-01" }  → midnight UTC of that day
@@ -275,14 +307,22 @@ export async function ingestRange(
   startDate: Date,
   endDate: Date,
 ): Promise<IngestResult> {
-  const result: IngestResult = { rowsAdded: 0, rowsSeen: 0, kinds: [], errors: [] };
+  const result: IngestResult = {
+    rowsAdded: 0,
+    rowsSeen: 0,
+    kinds: [],
+    errors: [],
+  };
   const start = fmtDate(startDate);
   const end = fmtDate(endDate);
   const now = Date.now();
 
   for (const kind of FETCHED_KINDS) {
     try {
-      const params: Record<string, string> = { start_date: start, end_date: end };
+      const params: Record<string, string> = {
+        start_date: start,
+        end_date: end,
+      };
       const items = await fetchPaged(`/${kind}`, token, params);
       result.rowsSeen += items.length;
       if (items.length === 0) continue;
@@ -295,11 +335,17 @@ export async function ingestRange(
          ON CONFLICT(source, kind, recorded_at) DO NOTHING`,
       );
       const batch = items.map((item) =>
-        stmt.bind(kind, recordedAtFromItem(kind, item), now, JSON.stringify(item)),
+        stmt.bind(
+          kind,
+          recordedAtFromItem(kind, item),
+          now,
+          JSON.stringify(item),
+        ),
       );
       const results = await db.batch(batch);
       for (const r of results) {
-        if (r.meta?.changes && r.meta.changes > 0) result.rowsAdded += r.meta.changes;
+        if (r.meta?.changes && r.meta.changes > 0)
+          result.rowsAdded += r.meta.changes;
       }
     } catch (e) {
       result.errors.push(`${kind}: ${(e as Error).message}`);
@@ -326,7 +372,11 @@ export async function latestReadings(
 }
 
 // Pull the most-recent stored payload for a kind, JSON-parsed.
-async function latestPayload(db: D1Database, kind: string): Promise<{ recorded_at: number; payload: any } | null> {
+async function latestPayload(
+  db: D1Database,
+  kind: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- an Oura API JSON payload, read field by field; no schema is enforced here
+): Promise<{ recorded_at: number; payload: any } | null> {
   const row = await db
     .prepare(
       `SELECT recorded_at, payload FROM readings
@@ -357,8 +407,11 @@ async function latestScoredPayload(
   db: D1Database,
   kind: string,
   paths: string[],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- an Oura API JSON payload, read field by field; no schema is enforced here
 ): Promise<{ recorded_at: number; payload: any } | null> {
-  const cond = paths.map((p) => `json_extract(payload, '${p}') IS NOT NULL`).join(" OR ");
+  const cond = paths
+    .map((p) => `json_extract(payload, '${p}') IS NOT NULL`)
+    .join(" OR ");
   const row = await db
     .prepare(
       `SELECT recorded_at, payload FROM readings
@@ -391,14 +444,15 @@ export async function briefForToday(db: D1Database): Promise<{
   recovery_signal: "recovering" | "balanced" | "strained" | "unknown";
   sources: Record<string, number | null>;
 }> {
-  const [readiness, sleep, dailySleep, dailyActivity, scoredSleep] = await Promise.all([
-    latestPayload(db, "daily_readiness"),
-    latestPayload(db, "sleep"),
-    latestPayload(db, "daily_sleep"),
-    latestPayload(db, "daily_activity"),
-    // HRV comes from the newest SCORED sleep row, not simply the newest one. See latestScoredPayload.
-    latestScoredPayload(db, "sleep", ["$.average_hrv", "$.hrv.average"]),
-  ]);
+  const [readiness, sleep, dailySleep, dailyActivity, scoredSleep] =
+    await Promise.all([
+      latestPayload(db, "daily_readiness"),
+      latestPayload(db, "sleep"),
+      latestPayload(db, "daily_sleep"),
+      latestPayload(db, "daily_activity"),
+      // HRV comes from the newest SCORED sleep row, not simply the newest one. See latestScoredPayload.
+      latestScoredPayload(db, "sleep", ["$.average_hrv", "$.hrv.average"]),
+    ]);
 
   // Oura v2 known fields (defensive: optional chaining throughout):
   //   daily_readiness.payload.score                       (int 0-100)
@@ -409,7 +463,8 @@ export async function briefForToday(db: D1Database): Promise<{
   const readinessScore: number | null = readiness?.payload?.score ?? null;
   const sleepScore: number | null = dailySleep?.payload?.score ?? null;
   const activityScore: number | null = dailyActivity?.payload?.score ?? null;
-  const tempDelta: number | null = readiness?.payload?.temperature_deviation ?? null;
+  const tempDelta: number | null =
+    readiness?.payload?.temperature_deviation ?? null;
   // Prefer the newest row that actually has a value; fall back to the newest row so behaviour is
   // unchanged when the latest reading IS scored (the common case).
   const hrvAvg: number | null =
@@ -422,13 +477,16 @@ export async function briefForToday(db: D1Database): Promise<{
   // session has not been scored yet. Reporting it is the difference between "no HRV" and
   // "HRV from two nights ago", which are opposite conclusions.
   const hrvAsOf: number | null =
-    (scoredSleep?.payload?.average_hrv ?? scoredSleep?.payload?.hrv?.average) != null
+    (scoredSleep?.payload?.average_hrv ?? scoredSleep?.payload?.hrv?.average) !=
+    null
       ? scoredSleep!.recorded_at
       : hrvAvg !== null
         ? (sleep?.recorded_at ?? null)
         : null;
   const hrvAgeHours: number | null =
-    hrvAsOf === null ? null : Math.round(((Date.now() - hrvAsOf) / 3_600_000) * 10) / 10;
+    hrvAsOf === null
+      ? null
+      : Math.round(((Date.now() - hrvAsOf) / 3_600_000) * 10) / 10;
 
   // Recovery signal — simple threshold off readiness + HRV trend slot.
   // Not a clinical claim; a hint for the morning brief's one-line nervous-system-load criterion.
@@ -440,9 +498,12 @@ export async function briefForToday(db: D1Database): Promise<{
   }
 
   // as_of = most recent recorded_at across the four kinds (so callers know data freshness).
-  const recordedAts = [readiness?.recorded_at, sleep?.recorded_at, dailySleep?.recorded_at, dailyActivity?.recorded_at].filter(
-    (v): v is number => typeof v === "number",
-  );
+  const recordedAts = [
+    readiness?.recorded_at,
+    sleep?.recorded_at,
+    dailySleep?.recorded_at,
+    dailyActivity?.recorded_at,
+  ].filter((v): v is number => typeof v === "number");
   const asOf = recordedAts.length ? Math.max(...recordedAts) : null;
 
   // Fail-loud freshness guard. The brief must never read a confident "balanced" while
@@ -454,7 +515,8 @@ export async function briefForToday(db: D1Database): Promise<{
   return {
     as_of: asOf,
     stale,
-    data_age_hours: dataAgeHours === null ? null : Math.round(dataAgeHours * 10) / 10,
+    data_age_hours:
+      dataAgeHours === null ? null : Math.round(dataAgeHours * 10) / 10,
     readiness: readinessScore,
     hrv_avg_ms: hrvAvg,
     hrv_as_of: hrvAsOf,
@@ -481,7 +543,9 @@ export async function feedFreshness(db: D1Database): Promise<{
   stale: boolean;
 }> {
   const row = await db
-    .prepare(`SELECT MAX(received_at) AS last FROM readings WHERE source = 'oura'`)
+    .prepare(
+      `SELECT MAX(received_at) AS last FROM readings WHERE source = 'oura'`,
+    )
     .first<{ last: number | null }>();
   const last = row?.last ?? null;
   const ageHours = last === null ? null : (Date.now() - last) / 3_600_000;

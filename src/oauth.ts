@@ -7,7 +7,10 @@ function b64urlEncode(buf: ArrayBuffer | Uint8Array): string {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  return btoa(bin)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
 }
 
 function b64urlDecode(s: string): Uint8Array {
@@ -36,11 +39,18 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
   );
 }
 
-export async function signState(source: string, secret: string): Promise<string> {
+export async function signState(
+  source: string,
+  secret: string,
+): Promise<string> {
   const nonce = b64urlEncode(crypto.getRandomValues(new Uint8Array(12)));
   const payload = `${source}.${Date.now()}.${nonce}`;
   const key = await hmacKey(secret);
-  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  const sig = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(payload),
+  );
   return `${payload}.${b64urlEncode(sig)}`;
 }
 

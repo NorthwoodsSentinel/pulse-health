@@ -59,6 +59,15 @@ See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full design — Wor
 - [ ] Step 7: Overwatch probes (Brook-style outcome verification — did fresh data land, are tokens expiring, are endpoints reachable)
 - [ ] Step 8: CGM source (Dexcom Stelo when its API opens, or Libre via Nightscout bridge)
 
+## Development
+
+```bash
+bun install --frozen-lockfile
+npm run local:gate   # the pre-push gate: everything CI runs, plus the local sign-off check
+```
+
+`npm run local:gate` runs `validate` (the action-pin guard, Prettier check, ESLint with no warnings allowed, `tsc --noEmit`, the guards' own tests, and the Vitest tests with 90% per-file coverage on lines, statements, functions and branches; the files listed in `vitest.config.ts` are excluded until their tests exist), then `local:dco` (every commit signed off). Run `npm run format` before committing. Tests touch no Cloudflare, Oura, Strava or push service. Deploying and remote D1 commands stay manual. The rules for working in this repo are in `AGENTS.md`; where they came from is in `PROVENANCE.md`.
+
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).

@@ -1,3 +1,5 @@
+# Files git never tracks: installs, wrangler state, build output, logs, local
+# secrets and keys, the coverage report the tests write, and scratch files.
 node_modules/
 .wrangler/
 dist/
@@ -9,3 +11,5 @@ dist/
 *.pem
 vapid-*.txt
 .DS_Store
+coverage/
+.scratch/
